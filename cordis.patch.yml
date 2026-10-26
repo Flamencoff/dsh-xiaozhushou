@@ -1,0 +1,16 @@
+- insert:
+    - id: steward
+      name: 'dsh-xiaozhushou'
+      config:
+        enabled:
+          secretary: true
+          ceo: true
+          # 0.47.0 发布默认：史官开启且可读真实会话（D-05/06）。
+          # 开发/测试想隐私优先：这里改 false，并把下面 scope.mode 改回 sandbox。
+          historian: true
+        historian:
+          # 发布默认读全部会话；sandbox = 只读 [实验] 前缀的测试会话 + 三个角色会话
+          scope:
+            mode: all
+            prefixes:
+              - '[实验]'

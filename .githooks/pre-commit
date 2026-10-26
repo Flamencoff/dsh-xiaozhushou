@@ -1,0 +1,32 @@
+#!/bin/sh
+# 提交前闸门：任一检查不过就不让提交。
+# 安装：git config core.hooksPath .githooks
+set -e
+
+cd "$(git rev-parse --show-toplevel)"
+
+should_run=0
+for path in $(git diff --cached --name-only); do
+  case "$path" in
+    *.js|*.mjs|*.json|*.yml|*.yaml|*.md|package.json)
+      should_run=1
+      ;;
+  esac
+done
+[ "$should_run" = "1" ] || exit 0
+
+echo "[pre-commit] 语法检查"
+node --check index.js
+node --check client.js
+for f in core/*.js roles/*.js scripts/*.mjs test/harness.mjs; do
+  node --check "$f"
+done
+
+echo "[pre-commit] 发布自检"
+node scripts/check-release.mjs
+
+echo "[pre-commit] 依赖体检"
+node scripts/check-imports.mjs
+
+echo "[pre-commit] 自测"
+node test/harness.mjs

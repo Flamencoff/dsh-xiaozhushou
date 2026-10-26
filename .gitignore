@@ -1,0 +1,27 @@
+# 依赖（本插件零 npm 依赖，仅防御）
+node_modules/
+.pnpm-store/
+
+# 运行数据与产物（绝不入库）
+data/
+dist/
+*.tgz
+*.zip
+
+# 测试临时目录
+test/.tmp-home/
+.tmp/
+
+# 系统与编辑器
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+
+# 本地环境与密钥
+.env
+.env.*
+*.pem
+*.key
+.npmrc.local
