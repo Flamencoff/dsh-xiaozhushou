@@ -12,7 +12,7 @@ DSH Host
            ├── 注册 24 条 HTTP 路由（/api/dsh-xiaozhushou/*，本机 127.0.0.1 回环接口，不是对外网关）
            ├── 注册 3 个工具（steward_secretary / steward_ceo / steward_historian）
            ├── 注册 3 个角色 preset + 60s 心跳
-           └── 组装 core/ 28 个模块
+           └── 组装 core/ 30 个模块
       └── client.js（客户端半，1166 行）
            └── 注册 3 个插槽：sidebar.panellist / main / shell.overlay
 ```
@@ -114,7 +114,7 @@ DSH Host
 | D-05/06 | 史官门控：发布版默认 `enabled.historian: true` + `scope.mode: all`（可读真实会话）；开发测试版 `sandbox`（只读 `[实验]`） | 已完成（0.47.0：patch/默认值都是 true + all；sandbox 配法写进 README） | `feat/historian-gating` |
 | D-18 | 数据目录默认 `%USERPROFILE%\.dsh-session-steward\data`，兼容旧指针迁移 | 已完成（0.47.0：新指针优先，旧 `.dsh-xiaozhushou` 指针回退读取） | `fix/datadir-name` |
 | D-19 | 长期记忆简化版：四文件（用户画像 / 近期交代 / 长期规划 / 情绪与处境），史官周更，秘书/CEO 按需读 | 已完成（0.47.0：`core/memory.js` + 摘要 ≤420 字进上下文） | `feat/memory-files` |
-| D-20 | CEO：判断后按钮式硬动作；用户说"开新会话执行"→ 真开会话并跑通权限审批 | 已完成（0.47.0：接下/完成/转交 + `core/ceo-execute.js`） | `feat/ceo-execute` |
+| D-20 | CEO：判断后会话/工具式硬动作；用户说"开新会话执行"→ 真开会话并跑通权限审批 | 已完成（0.47.0：接下/完成/转交 + `core/ceo-execute.js`） | `feat/ceo-execute` |
 | D-16 | 发布说明写清"24 条路由 = 本地回环接口"，不是对外网关 | 已完成（0.47.0：README/RELEASE/ARCHITECTURE 三处 + 守卫用例） | `docs/route-note` |
 
 **执行顺序**：D-18 → D-02 → D-01 → D-05/06 → D-16 → D-19 → D-20。

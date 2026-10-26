@@ -30,7 +30,7 @@
 
 dsh小助手是 DeepSeek Harness 的一个插件（bundle）。装上之后：
 
-- **侧栏多一个图标**：点开是整页看板（提醒、待办、优先级、CEO 结论、史官摘要）；
+- **侧栏多一个图标**：点开是整页看板（待办、优先级、CEO 任务、史官摘要）；
 - **右下角多一只鲸鱼娘浮窗**：拖来拖去、点开卡片、右键菜单；
 - **三个角色**：
   - **秘书**（简单陪聊 + 记录看板）：陪你聊两句、把你要记的事记成待办；不做判断，需要判断时让 CEO 来；
@@ -41,38 +41,17 @@ dsh小助手是 DeepSeek Harness 的一个插件（bundle）。装上之后：
 
 ## 安装（不会编程也能装）
 
-> 插件零 npm 依赖，不需要联网；装完重启 DSH（或刷新页面）。
+> 插件零 npm 依赖；安装 npm 包需要联网；装完重启 DSH（或刷新页面）。
 
-### 最简单：把这句话发给 DSH 里的助手
+### 方式 A：一句话让 DSH 助手装（推荐，免命令行）
 
-把下面这句复制给 DSH（把“安装源”换成你的仓库地址或本机文件夹路径）：
+把下面这句发给 DSH 助手：
 
-> 帮我安装 dsh-xiaozhushou 插件，安装源：`<GitHub 仓库地址或本机路径>`
+> 帮我安装 dsh-xiaozhushou 插件，npm 包名：dsh-xiaozhushou
 
-它会调用插件管理器自动装好；返回 `application: applied` 就成功了。装完按提示重启 DSH。
+成功标志：返回 `application: applied`；装完按提示重启 DSH。
 
-### 或者：桌面版插件管理器
-
-```text
-plugin_manager · action=install_bundle
-target = git+https://github.com/Flamencoff/dsh-xiaozhushou.git
-```
-
-也可以把本仓库下载到本地，用绝对路径安装：`target = <本仓库绝对路径>`。
-
-### 方式 A：桌面版插件管理器（推荐，免命令行）
-
-在 DSH 里让 Agent 执行：
-
-```text
-plugin_manager · action=install_bundle
-target = git+https://github.com/Flamencoff/dsh-xiaozhushou.git
-```
-
-也可以把本仓库下载到本地后用绝对路径安装：`target = <本仓库绝对路径>`。
-成功标志：返回 `application: applied`。
-
-### 方式 B：CLI（npm，发布后可用）
+### 方式 B：CLI（npm，推荐）
 
 ```sh
 # Web 版
@@ -81,21 +60,30 @@ dsh plugin --profile web add dsh-xiaozhushou
 dsh plugin --profile desktop add dsh-xiaozhushou
 ```
 
-### 方式 C：CLI（GitHub 源码安装）
+### 方式 C：CLI（GitHub 源码安装，网络能访问 GitHub 时）
 
 ```sh
 dsh plugin --profile web add github:Flamencoff/dsh-xiaozhushou
 ```
 
-> `--profile` 后面换成你自己的 profile 名（`desktop` / `web` / …）。
-> 卸载：`dsh plugin --profile desktop remove dsh-xiaozhushou`。**卸载不删数据。**
+### 方式 D：本地文件夹 / tgz（离线、调试用）
+
+在 DSH 里让 Agent 执行：
+
+```text
+plugin_manager · action=install_bundle
+target = <本仓库绝对路径或 tgz 路径>
+```
+
+> `--profile` 后面换成你自己的 profile 名（`web` / `desktop` / …）。
+> 卸载：`dsh plugin --profile web remove dsh-xiaozhushou`（桌面版把 `web` 换成 `desktop`）。**卸载不删数据。**
 
 ## 5 分钟上手
 
 1. 点侧栏 **dsh小助手** 图标 → 打开看板；
 2. 在秘书框里说「**记一下：周五前交周报**」→ 待办台账里出现一条候选；
 3. 说「**确认 T-001 周五 紧急 重要**」→ 进入已确认，开始参与提醒与优先级；
-4. 说「**问一下 CEO 这周先干哪件**」→ 生成任务 `K-xxx`，CEO 面板能看到并「接下 / 完成 / 转交」；
+4. 说「**问一下 CEO 这周先干哪件**」→ 生成任务 `K-xxx`；CEO 会直接接下/完成/归档/存为记忆（按任务号说或让它自己判断）；
 5. 对 CEO 说「**开新会话执行 整理三季度材料**」→ 真的开一个 CEO 预设会话（标题 `dsh小助手 · CEO 执行`），任务写进第一句，权限审批在该会话里弹；
 6. 右键右下角鲸鱼娘 → 刷新 / 唤出 / 隐藏。
 
@@ -167,7 +155,7 @@ node scripts/check-imports.mjs # 模块依赖体检（无循环、无外部依�
 
 ## 已知限制
 
-1. **角色聊天必须先绑定真实会话**（点「把三个角色会话建好」，或在会话里点绑定）；没绑定时聊天直接报「会话不可用（卡在…）」，不会用模型代答；
+1. **角色聊天必须先绑定真实会话**：首次启动会自动建好三个角色会话（已有则复用）；若被删，重启 DSH 会重新建；仍不可用时看 `/health` 与数据目录 `维修站.md`；
 2. 长期记忆是**简化版**：四份 Markdown 由规则生成（台账/任务板统计 + 角色对话与言行录摘句），不做语义检索；周更只重写 `<!-- AUTO:START -->…<!-- AUTO:END -->` 自动区，你在自动区外手写的内容会保留；周更由「跑一次史官」触发；
 3. 端口每次启动会变，写脚本调用时先探测 `/health`；
 4. 没有独立的设置页 UI，配置改 `cordis.patch.yml`；
@@ -176,8 +164,8 @@ node scripts/check-imports.mjs # 模块依赖体检（无循环、无外部依�
 
 ## 回退与卸载
 
-- **卸载**：插件管理器 `remove_bundle` 或 `dsh plugin --profile desktop remove dsh-xiaozhushou`；**卸载不删数据**。
-- **回退**：装回上一个 tag 的版本即可（发布包保留 v0.46.0 与 v0.47.0）；数据在 `~/.dsh-session-steward/data`，换版本不会丢。
+- **卸载**：插件管理器 `remove_bundle`，或 `dsh plugin --profile web remove dsh-xiaozhushou`（桌面版把 `web` 换成 `desktop`）；**卸载不删数据**。
+- **回退**：装回上一个 tag 的版本即可（v0.47.3 / v0.47.2 / v0.47.1 / v0.47.0 / v0.46.0 都有发布包）；数据在 `~/.dsh-session-steward/data`，换版本不会丢。
 - **彻底清掉**：先备份数据目录，再删 `%USERPROFILE%\.dsh-session-steward\`（指针与数据）；插件本体由 profile 卸载。
 - **出问题先看**：`GET /api/dsh-xiaozhushou/health`（ok/version/degraded），以及数据目录下的 `维修站.md`（插件自检生成的诊断）。
 
@@ -187,7 +175,7 @@ node scripts/check-imports.mjs # 模块依赖体检（无循环、无外部依�
 |---|---|
 | `index.js` | 宿主半入口：24 条 HTTP 路由 + 角色/工具/定时器注册 |
 | `client.js` | 客户端半：侧栏图标 + 整页看板 + 浮窗 |
-| `core/` | 28 个纯逻辑模块（台账、提醒、史官、长期记忆、任务板、CEO 执行、模型调用等） |
+| `core/` | 30 个纯逻辑模块（台账、提醒、史官、长期记忆、任务板、CEO 执行、模型调用等） |
 | `roles/` | 三个角色 preset 与身份提示词 |
 | `locale/` | 中英文文案 |
 | `test/harness.mjs` | 零依赖自测台（185 项） |
