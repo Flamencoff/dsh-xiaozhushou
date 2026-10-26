@@ -75,13 +75,16 @@ target = git+https://github.com/Flamencoff/dsh-xiaozhushou.git
 ### 方式 B：CLI（npm，发布后可用）
 
 ```sh
+# Web 版
+dsh plugin --profile web add dsh-xiaozhushou
+# 桌面版
 dsh plugin --profile desktop add dsh-xiaozhushou
 ```
 
 ### 方式 C：CLI（GitHub 源码安装）
 
 ```sh
-dsh plugin --profile desktop add github:Flamencoff/dsh-xiaozhushou
+dsh plugin --profile web add github:Flamencoff/dsh-xiaozhushou
 ```
 
 > `--profile` 后面换成你自己的 profile 名（`desktop` / `web` / …）。
