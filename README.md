@@ -53,11 +53,16 @@ dsh小助手是 DeepSeek Harness 的一个插件（bundle）。装上之后：
 
 ### 方式 B：CLI（npm，推荐）
 
+**桌面版：**
+
 ```sh
-# Web 版
-dsh plugin --profile web add dsh-xiaozhushou
-# 桌面版
 dsh plugin --profile desktop add dsh-xiaozhushou
+```
+
+**Web 版：**
+
+```sh
+dsh plugin --profile web add dsh-xiaozhushou
 ```
 
 ### 方式 C：CLI（GitHub 源码安装，网络能访问 GitHub 时）
