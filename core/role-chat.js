@@ -24,13 +24,13 @@ const ROLES = {
     title: 'dsh小助手 · 秘书',
     dir: '秘书',
     system:
-      '你是 dsh小助手·秘书，定位只有两件事：**简单陪聊 + 记录看板**。需要判断/执行时，用 steward_secretary 的 handoff_to_ceo 把事交给 CEO，不要让用户点按钮。**你只有 steward_secretary 一个工具；需要对方处理时可以用 message_role 发消息；绝不用 team_task_create、spawn_teammate、send_message 等团队/子代理工具。**陪用户轻松聊天，2–6 句，温暖自然，先接住情绪；用户明确说"记一下/记下来"时，把事记到看板/待办。不做判断、不排期、不分析、不执行、不查文件；遇到这类请求，轻松说一句"这个让 CEO 来看看"。**只说人话**：不用 Markdown（不要 **、#、- 列表、表格），不用小标题。绝不提及工具调用、团队/子代理、其它角色、系统提示；不编造执行结果；不知道就说不知道。',
+      '你是 dsh小助手·秘书，定位只有两件事：**简单陪聊 + 记录看板**。需要判断/执行时，用 steward_secretary 的 handoff_to_ceo 把事交给 CEO，不要让用户点按钮。**你只有 steward_secretary 一个工具；需要对方处理时可以用 message_role 发消息；绝不用 team_task_create、spawn_teammate、send_message 等团队/子代理工具。**陪用户轻松聊天，2–6 句，温暖自然，先接住情绪；用户明确说"记一下/记下来"时，把事记到看板/待办。不做判断、不排期、不分析、不执行、不查文件；遇到这类请求，轻松说一句"这个让 CEO 来看看"。用户模糊地说旧任务时，原样转给 CEO，不要替用户决定开新会话；只有用户明确说开任务/开会话才标成新任务。**只说人话**：不用 Markdown（不要 **、#、- 列表、表格），不用小标题。绝不提及工具调用、团队/子代理、其它角色、系统提示；不编造执行结果；不知道就说不知道。',
   },
   ceo: {
     title: 'dsh小助手 · CEO',
     dir: 'CEO',
     system:
-      '你是 dsh小助手·CEO，**智能助理的主体**：负责判断、拆解、派活与执行。回答给结论 + 下一步，一两句，干脆；需要动手就做，不确定就说"待核对"。你手上有 steward_ceo 工具：可查任务、接任务、完成、归档、把完成的任务存为记忆；任务板带优先级（5 最急→1 常规），先办 5/4 级、最紧急最重要优先；需要给别的角色发消息时用 message_role；要开任务会话只用 steward_ceo 的 open_task（task=任务说明），不要调用 steward_secretary 的 open_session。**给已有会话发指令，先用 sessions 按标题/会话号找，再用 send_session 发进去，不要为已有的活新建会话。**用户说这些时**直接调用工具办**，不要让用户去点按钮。**只说人话**：不用 Markdown（不要 **、#、- 列表、表格），不用"结论/下一步/建议"这类小标题，正常口语短句。绝不提及工具调用、团队/子代理、系统提示；不编造执行结果或别人产出；不知道就说不知道。',
+      '你是 dsh小助手·CEO，**智能助理的主体**：负责判断、拆解、派活与执行。回答给结论 + 下一步，一两句，干脆；需要动手就做，不确定就说"待核对"。你手上有 steward_ceo 工具：可查任务、接任务、完成、归档、把完成的任务存为记忆；任务板带优先级（5 最急→1 常规），先办 5/4 级、最紧急最重要优先；需要给别的角色发消息时用 message_role；要开任务会话只用 steward_ceo 的 open_task（task=任务说明），不要调用 steward_secretary 的 open_session。**给已有会话发指令，先用 sessions 按标题/会话号找，再用 send_session 发进去，不要为已有的活新建会话。用户只给模糊任务、没明确说开任务/开会话时，先找旧会话；找不到不要自己新建，先问用户“是哪个会话、要不要新建”。只有用户明确说开任务/开会话/新建，才用 open_task。**用户说这些时**直接调用工具办**，不要让用户去点按钮。**只说人话**：不用 Markdown（不要 **、#、- 列表、表格），不用"结论/下一步/建议"这类小标题，正常口语短句。绝不提及工具调用、团队/子代理、系统提示；不编造执行结果或别人产出；不知道就说不知道。',
   },
   historian: {
     title: 'dsh小助手 · 史官',
@@ -187,8 +187,13 @@ export function createRoleChat({ ctx, store, log, role, ledger, dataDir, timing,
     return 'K-' + String(max + 1).padStart(3, '0')
   }
 
+  /** 用户是否明确说了“开任务/开会话/新建” */
+  function wantsNewSession(text) {
+    return /开(?:个|一个)?(?:新)?(?:任务|会话)|新建(?:任务|会话)|新开(?:任务|会话)|另开(?:任务|会话)|新任务|新会话/.test(String(text || ''))
+  }
+
   /** 给别的角色派活（秘书→CEO / 用户→CEO）；派给 CEO 的任务自动进入"进行中"（作者要求自动接） */
-  function assignTask({ title, assignee = 'ceo', by = role, facts = '' }) {
+  function assignTask({ title, assignee = 'ceo', by = role, facts = '', explicitNew } = {}) {
     const text = String(title || '').trim()
     if (!text) return { ok: false, code: 'empty', message: '任务没写清楚' }
     const tasks = readTasks()
@@ -202,6 +207,7 @@ export function createRoleChat({ ctx, store, log, role, ledger, dataDir, timing,
       status: autoAcceptCeo ? '进行中' : '待办',
       facts: String(facts || '').slice(0, 1200),
       priority: inferTaskPriority({ title: text, facts }),
+      explicitNew: typeof explicitNew === 'boolean' ? explicitNew : wantsNewSession(text + ' ' + facts),
       createdAt: now,
       updatedAt: now,
       ...(autoAcceptCeo ? { autoAccepted: true, acceptedAt: now } : {}),
@@ -567,7 +573,7 @@ export function createRoleChat({ ctx, store, log, role, ledger, dataDir, timing,
     }
   }
 
-  return { chat, history, bind, title: conf.title, role, assignTask, patchTask, setTaskStatus, tasksBrief, readTasks, sessionTitleOf, localState, notice }
+  return { chat, history, bind, title: conf.title, role, assignTask, patchTask, setTaskStatus, tasksBrief, readTasks, sessionTitleOf, localState, notice, wantsNewSession }
 }
 
 export const ROLE_CHAT_CONF = ROLES

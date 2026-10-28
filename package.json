@@ -1,6 +1,6 @@
 {
   "name": "dsh-xiaozhushou",
-  "version": "0.47.4",
+  "version": "0.47.5",
   "description": "dsh小助手：秘书 / CEO / 史官 三角色助手的 DeepSeek Harness 插件，带本地待办台账、定点提醒、共享任务板与看板娘浮窗",
   "type": "module",
   "main": "index.js",

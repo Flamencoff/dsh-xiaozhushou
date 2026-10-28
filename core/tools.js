@@ -15,7 +15,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fourQuestions, singleLine } from './analysis.js'
-import { EXECUTE_TITLE, buildExecutePrompt } from './ceo-execute.js'
+import { EXECUTE_TITLE, buildExecutePrompt, buildExecuteTitle } from './ceo-execute.js'
 
 export const TOOL_NAMES = ['steward_secretary', 'steward_ceo', 'steward_historian']
 
@@ -96,8 +96,9 @@ export function createToolset(deps) {
         const title = String(args.title || '').trim() || facts.split(/[。\n]/)[0].slice(0, 80).trim() || facts.slice(0, 80)
         const made = taskOps.assign(title, facts)
         if (!made || !made.ok) return { ok: false, text: (made && made.message) || '没挂到 CEO 名下' }
+        const explicitNew = made.task && made.task.explicitNew === true
         const notified = roleChats && roleChats.ceo && typeof roleChats.ceo.notice === 'function'
-          ? await roleChats.ceo.notice('秘书转交任务 ' + made.task.id + '：' + made.task.title + '\n背景：' + facts.slice(0, 800) + '\n请接下并按需要开任务会话，完成后写结果、归档。')
+          ? await roleChats.ceo.notice('秘书转交任务 ' + made.task.id + '：' + made.task.title + '\n背景：' + facts.slice(0, 800) + (explicitNew ? '\n这是用户明确要开的新任务：请开任务会话。' : '\n这不是明确要新建：先按标题/会话号搜旧会话；找到用 send_session 发进去；找不到先问用户是哪个会话、要不要新建，不要直接开会话。'))
           : { ok: false }
         return { ok: true, text: '已挂到 CEO 名下：' + made.task.id + ' ' + made.task.title + (notified.ok ? '（已通知 CEO 会话）' : '（CEO 会话没绑定，先挂在板上了）') }
       }
@@ -248,11 +249,12 @@ export function createToolset(deps) {
         const task = String((args && (args.task || args.topic)) || '').trim().slice(0, 2000)
         if (!task) return { ok: false, text: '要开什么任务会话？给一句任务说明' }
         if (!taskOps || typeof taskOps.assign !== 'function') return { ok: false, text: '这个环境没有任务板接口' }
-        const made = taskOps.assign(task, '（CEO 开任务会话时自动登记）')
+        const made = taskOps.assign(task, '（CEO 开任务会话时自动登记）', true)
         if (!made || !made.ok) return { ok: false, text: (made && made.message) || '任务登记失败' }
         const card = taskFlow && typeof taskFlow.writeHandoff === 'function' ? taskFlow.writeHandoff({ task: made.task }) : { ok: false }
+        const sessionTitle = buildExecuteTitle(task)
         const spawned = await spawner.spawn({
-          title: EXECUTE_TITLE,
+          title: sessionTitle,
           prompt: buildExecutePrompt(task, { handoffCard: card.ok ? card.path : '' }),
           confirmedByAuthor: true,
         })
@@ -262,7 +264,7 @@ export function createToolset(deps) {
         }
         if (typeof taskOps.patch === 'function') taskOps.patch(made.task.id, { sessionId: spawned.sessionId, handoffCard: card.ok ? card.path : '' })
         const card2 = taskFlow && typeof taskFlow.writeHandoff === 'function' ? taskFlow.writeHandoff({ task: { ...made.task, sessionId: spawned.sessionId }, sessionId: spawned.sessionId }) : card
-        return { ok: true, text: '已开好任务会话「' + EXECUTE_TITLE + '」（' + spawned.sessionId + '）：任务 ' + made.task.id + ' 已登记，交接卡：' + (card2.ok ? card2.path : '（没写成）') }
+        return { ok: true, text: '已开好任务会话「' + sessionTitle + '」（' + spawned.sessionId + '）：任务 ' + made.task.id + ' 已登记，交接卡：' + (card2.ok ? card2.path : '（没写成）') }
       }
       if (action === 'tasks') {
         if (!taskOps || typeof taskOps.list !== 'function') return { ok: false, text: '这个环境没有任务板接口' }
@@ -283,10 +285,13 @@ export function createToolset(deps) {
         if (action === 'remember_task') changed = taskOps.remember(id)
         if (!changed || !changed.ok) return { ok: false, text: (changed && changed.message) || '没处理成' }
         let sessionNote = ''
-        if (action === 'accept_task' && before && !before.sessionId && spawner && typeof spawner.spawn === 'function') {
+        if (action === 'accept_task' && before && !before.sessionId && before.explicitNew !== true) {
+          sessionNote = '；没有自动开新会话：先搜旧会话，找不到先问用户是哪个会话、要不要新建'
+        }
+        if (action === 'accept_task' && before && !before.sessionId && before.explicitNew === true && spawner && typeof spawner.spawn === 'function') {
           const card = taskFlow && typeof taskFlow.writeHandoff === 'function' ? taskFlow.writeHandoff({ task: before }) : { ok: false }
           const spawned = await spawner.spawn({
-            title: EXECUTE_TITLE,
+            title: buildExecuteTitle(before.title),
             prompt: buildExecutePrompt(before.title, { handoffCard: card.ok ? card.path : '' }),
             confirmedByAuthor: true,
           })

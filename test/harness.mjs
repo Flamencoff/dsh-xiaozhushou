@@ -161,7 +161,7 @@ const paths = await import('../core/paths.js')
 const { collect } = await import('../core/collect.js')
 const { createRoleChat } = await import('../core/role-chat.js')
 const { createMemory, MEMORY_FILES, MEMORY_WEEK_MS, AUTO_START, AUTO_END } = await import('../core/memory.js')
-const { createCeoExecutor, detectExecuteIntent, EXECUTE_TITLE, EXECUTE_PRESET } = await import('../core/ceo-execute.js')
+const { createCeoExecutor, detectExecuteIntent, EXECUTE_TITLE, EXECUTE_PRESET, buildExecuteTitle } = await import('../core/ceo-execute.js')
 
 /* ── 宿主半：结构与路由 ───────────────────────────────────── */
 test('宿主半导出 apply 与 inject', () => {
@@ -235,6 +235,30 @@ test('sessionQuery 不可用时降级，不报 500', async () => {
 })
 
 /* ── 台账状态机 ───────────────────────────────────────────── */
+test('事项跳转：引用 K-019 的待办继承旧会话；任务可指定旧会话优先', () => {
+  const merged = buildAttention({
+    todos: [{ id: 'T-001', title: '验收 K-019 材料画像', status: '已确认', urgency: 1, importance: 1 }],
+    tasks: [{ id: 'K-020', title: '攻坚任务', status: '进行中', sessionId: 'session-new', jumpSessionId: 'session-old', priority: { level: 5, label: '最急' } }],
+    linkTasks: [{ id: 'K-019', status: '完成', sessionId: 'session-k019' }, { id: 'K-020', title: '攻坚任务', status: '进行中', sessionId: 'session-new', jumpSessionId: 'session-old' }],
+  })
+  const todo = merged.items.find((item) => item.id === 'T-001')
+  const task = merged.items.find((item) => item.id === 'K-020')
+  assert.equal(todo.sessionId, 'session-k019')
+  assert.equal(task.sessionId, 'session-old', 'jumpSessionId 要优先于当前任务会话')
+})
+
+test('任务路由：模糊旧任务不标新会话，明确“开任务/开会话”才标新', () => {
+  const dir = freshDir('task-explicit')
+  const store = createStore(dir)
+  const chat = createRoleChat({ ctx: { get: () => undefined }, store, log: () => {}, dataDir: dir, role: 'secretary' })
+  const vague = chat.assignTask({ title: '把上次那个材料再改一下', assignee: 'ceo', by: 'secretary', facts: '用户原话' })
+  assert.equal(vague.ok, true)
+  assert.equal(vague.task.explicitNew, false)
+  const explicit = chat.assignTask({ title: '开个任务会话：整理三季度材料', assignee: 'ceo', by: 'secretary' })
+  assert.equal(explicit.ok, true)
+  assert.equal(explicit.task.explicitNew, true)
+})
+
 test('待办：调整层级、划掉=暂停、恢复，不丢数据', () => {
   const dir = freshDir('ledger-pause')
   const store = createStore(dir)
@@ -1292,7 +1316,7 @@ test('D-20 守卫：问句不会被当成"开新会话执行"（征询不动手�
   assert.equal(empty.httpStatus, 400)
 })
 
-test('D-20 执行器：spawner 参数正确（CEO preset / 固定标题 / 任务进第一句）', async () => {
+test('D-20 执行器：spawner 参数正确（普通会话 / CEO·任务名标题 / 任务进第一句）', async () => {
   const calls = []
   const executor = createCeoExecutor({ spawner: { spawn: async (req) => { calls.push(req); return { ok: true, sessionId: 's-exec' } } } })
   const result = await executor.execute({ text: '开新会话执行 整理材料', task: '整理材料' })
@@ -1301,7 +1325,8 @@ test('D-20 执行器：spawner 参数正确（CEO preset / 固定标题 / 任务
   assert.equal(result.sessionId, 's-exec')
   assert.equal(calls.length, 1)
   assert.equal(calls[0].agentPreset, undefined, '任务会话应是普通会话，不套角色 preset')
-  assert.equal(calls[0].title, EXECUTE_TITLE)
+  assert.equal(calls[0].title, buildExecuteTitle('整理材料'))
+  assert.equal(calls[0].title, 'CEO · 整理材料')
   assert.equal(calls[0].confirmedByAuthor, true)
   assert.ok(calls[0].prompt.includes('整理材料'), '任务要写进第一句')
   assert.ok(calls[0].prompt.includes('权限'), '要说明权限在本会话里申请')
@@ -1339,9 +1364,9 @@ test('D-20 路由：/ceo/chat 命中"开新会话执行"时真建会话并回会
   assert.equal(res.json.ok, true)
   assert.equal(res.json.executed, true)
   assert.equal(res.json.sessionId, 's-ceo-new')
-  assert.equal(res.json.sessionTitle, EXECUTE_TITLE)
+  assert.equal(res.json.sessionTitle, buildExecuteTitle('整理三季度材料'))
   assert.equal(calls.create[0].agentPreset, undefined, '任务会话应是普通会话')
-  assert.equal(calls.rename[0].title, EXECUTE_TITLE)
+  assert.equal(calls.rename[0].title, buildExecuteTitle('整理三季度材料'))
   assert.ok(calls.prompt[0].content[0].text.includes('整理三季度材料'), '任务要写进第一句')
 })
 
@@ -2875,7 +2900,7 @@ test('client.js：id 一致，apply 注册 3 个插槽且 main.key 与侧栏 id 
     if (name === 'react') return makeReactStub()
     throw new Error('unexpected require: ' + name)
   })
-  assert.deepEqual(Array.from(half.inject), ['slots'])
+  assert.deepEqual(Array.from(half.inject), ['slots', 'uiWorkspace'])
 
   const injected = []
   const registered = []

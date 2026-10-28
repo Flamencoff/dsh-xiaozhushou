@@ -51,7 +51,7 @@ import { createHistorianSchedule } from './core/historian-schedule.js'
 export const inject = ['webServer']
 
 // 版本号单一来源（守卫测试会校验它与 package.json 一致）
-const VERSION = '0.47.4'
+const VERSION = '0.47.5'
 
 function readBoardTasks(storeRef) {
   try {
@@ -335,7 +335,7 @@ export function apply(ctx, configIn = {}) {
       try {
         const taskOps = {
         list: () => ceoRoleChat.readTasks(),
-        assign: (title, facts) => secretaryChat.assignTask({ title, assignee: 'ceo', by: 'secretary', facts }),
+        assign: (title, facts, explicitNew) => secretaryChat.assignTask({ title, assignee: 'ceo', by: 'secretary', facts, explicitNew }),
         setStatus: (id, status, options) => ceoRoleChat.setTaskStatus(id, status, options),
         patch: (id, fields) => ceoRoleChat.patchTask(id, fields),
         writeHandoff: (task, sessionId) => taskFlow.writeHandoff({ task, sessionId }),
@@ -490,7 +490,7 @@ export function apply(ctx, configIn = {}) {
         path: `${ROUTE_PREFIX}/state`,
         handler: (_req, res) => {
           const openTasks = ceoRoleChat.readTasks().filter((task) => task.status === '待办' || task.status === '进行中')
-          const state = buildState({ ...view(), openTasks })
+          const state = buildState({ ...view(), openTasks, allTasks: openTasks.length ? ceoRoleChat.readTasks() : [] })
           state.tasks = openTasks
             .filter((task) => !['完成', '已归档', '已记忆', '已作废'].includes(task.status))
             .sort((a, b) => ((b.priority && b.priority.level) || 0) - ((a.priority && a.priority.level) || 0))
@@ -508,7 +508,7 @@ export function apply(ctx, configIn = {}) {
         handler: (_req, res) => {
           const tasks = ceoRoleChat.readTasks()
           const openTasks = tasks.filter((task) => task.status === '待办' || task.status === '进行中')
-          sendJson(res, 200, Object.assign({}, buildBoard({ ...view(), openTasks }), { tasks }))
+          sendJson(res, 200, Object.assign({}, buildBoard({ ...view(), openTasks, allTasks: tasks }), { tasks }))
         },
       }),
     )
@@ -922,7 +922,7 @@ export function apply(ctx, configIn = {}) {
           if (!task) {
             return sendJson(res, 400, { ok: false, code: 'empty_task', message: '先在输入框写清楚要开的任务，再点「开新会话（任务）」' })
           }
-          const made = secretaryChat.assignTask({ title: task, assignee: 'ceo', by: 'ceo', facts: '（CEO 按钮开任务会话时自动登记）' })
+          const made = secretaryChat.assignTask({ title: task, assignee: 'ceo', by: 'ceo', facts: '（CEO 按钮开任务会话时自动登记）', explicitNew: true })
           if (!made || !made.ok) {
             return sendJson(res, 200, made || { ok: false, code: 'assign_failed', message: '任务登记失败' })
           }
@@ -993,6 +993,7 @@ export function apply(ctx, configIn = {}) {
           // 支持按任务号；没写任务号就取第一条挂给 CEO 的未完成任务；问句不触发
           let taskChange = null
           let autoSession = null
+          let noAutoSession = false
           const taskIntent = detectTaskIntent(question)
           if (taskIntent.matched) {
             const tasks = ceoRoleChat.readTasks()
@@ -1028,8 +1029,8 @@ export function apply(ctx, configIn = {}) {
                 taskChange = changed && changed.ok
                   ? { ok: true, label: taskIntentLabel(taskIntent), task: changed.task }
                   : { ok: false, message: (changed && changed.message) || '改任务状态失败' }
-                // 接下任务后自动开一个 CEO 执行会话：已有会话不重复开
-                if (taskChange.ok && taskIntent.action === '进行中' && !target.sessionId) {
+                // 接下任务后自动开执行会话：只有用户明确说开任务/开会话才开；模糊任务先问
+                if (taskChange.ok && taskIntent.action === '进行中' && !target.sessionId && target.explicitNew === true) {
                   const card = taskFlow.writeHandoff({ task: target })
                   const spawned = await ceoExecutor.execute({ task: target.title, handoffCard: card.ok ? card.path : '' })
                   if (spawned && spawned.ok) {
@@ -1039,6 +1040,8 @@ export function apply(ctx, configIn = {}) {
                     ceoRoleChat.patchTask(target.id, { spawnError: String((spawned && spawned.message) || 'no_session') })
                   }
                   autoSession = spawned && spawned.ok ? spawned : { ok: false, message: (spawned && spawned.message) || '开会话失败' }
+                } else if (taskChange.ok && taskIntent.action === '进行中' && !target.sessionId) {
+                  noAutoSession = true
                 }
               }
             } else if (taskIntent.taskId) {
@@ -1051,6 +1054,7 @@ export function apply(ctx, configIn = {}) {
             viaSession.text = (viaSession.text || '') + String.fromCharCode(10, 10) + '（' + taskChange.label + '：' + taskChange.task.id + ' ' + taskChange.task.title + '）'
             if (autoSession && autoSession.ok) viaSession.text += String.fromCharCode(10) + '（已开执行会话：' + autoSession.sessionTitle + ' ' + autoSession.sessionId + '）'
             if (autoSession && !autoSession.ok) viaSession.text += String.fromCharCode(10) + '（任务已接下，但执行会话没开成：' + autoSession.message + '）'
+            if (noAutoSession) viaSession.text += String.fromCharCode(10) + '（已接下；没有自动开新会话：先找旧会话，找不到先问用户是哪个会话、要不要新建）'
           }
           if (taskChange && !taskChange.ok && viaSession) {
             const note = '（' + taskChange.message + '）'
@@ -1125,7 +1129,7 @@ export function apply(ctx, configIn = {}) {
             if (assigned && assigned.ok) assignedTask = assigned.task
           if (assignedTask) {
             const label = question.slice(0, 800)
-            try { await ceoRoleChat.notice('用户转交任务 ' + assignedTask.id + '：' + assignedTask.title + '\n原话：' + label + '\n请接下并按需要开任务会话。') } catch {}
+            try { await ceoRoleChat.notice('用户转交任务 ' + assignedTask.id + '：' + assignedTask.title + '\n原话：' + label + (assignedTask.explicitNew === true ? '\n这是明确要开的新任务：请开任务会话。' : '\n这不是明确要新建：先找旧会话，找不到先问用户是哪个会话、要不要新建，不要直接开会话。')) } catch {}
           }
           }
           // 秘书不能"嘴上说问过 CEO"：说问就必须真转

@@ -14,7 +14,19 @@
  * 依赖规则：只 import node: 与 relative；spawner 显式注入。
  */
 
-export const EXECUTE_TITLE = 'dsh小助手 · CEO 执行'
+export const EXECUTE_TITLE = 'CEO · 任务'
+
+/** 新任务会话标题：CEO + 任务名；旧的角色绑定会话标题不动 */
+export function buildExecuteTitle(task) {
+  let text = String(task || '')
+    .replace(/^用户(?:原话|再次说)[：:]\s*[“"]?/, '')
+    .replace(/[”"]$/, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!text) return EXECUTE_TITLE
+  if (text.length > 36) text = text.slice(0, 36) + '…'
+  return 'CEO · ' + text
+}
 export const EXECUTE_PRESET = null
 
 /**
@@ -64,8 +76,9 @@ export function createCeoExecutor({ spawner }) {
     if (!spawner || typeof spawner.spawn !== 'function') {
       return { ok: false, code: 'no_spawner', httpStatus: 503, message: '这个环境不能开新会话（spawner 不可用），任务没执行' }
     }
+    const sessionTitle = buildExecuteTitle(wanted)
     const spawned = await spawner.spawn({
-      title: EXECUTE_TITLE,
+      title: sessionTitle,
       prompt: buildExecutePrompt(wanted, { handoffCard }),
       ...(EXECUTE_PRESET ? { agentPreset: EXECUTE_PRESET } : {}),
       confirmedByAuthor: true,
@@ -85,9 +98,9 @@ export function createCeoExecutor({ spawner }) {
       executed: true,
       task: wanted,
       sessionId: spawned.sessionId,
-      sessionTitle: EXECUTE_TITLE,
+      sessionTitle,
       agentPreset: EXECUTE_PRESET,
-      message: '已开好任务会话「' + EXECUTE_TITLE + '」（' + spawned.sessionId + '）：任务和交接卡写进第一句，权限审批会在该会话里弹。',
+      message: '已开好任务会话「' + sessionTitle + '」（' + spawned.sessionId + '）：任务和交接卡写进第一句，权限审批会在该会话里弹。',
     }
   }
 

@@ -34,8 +34,9 @@ function sortItems(a, b) {
   return String(a.id).localeCompare(String(b.id))
 }
 
-export function buildAttention({ todos = [], tasks = [], now = new Date(), limit = 20 } = {}) {
+export function buildAttention({ todos = [], tasks = [], linkTasks = [], now = new Date(), limit = 20 } = {}) {
   const items = []
+  const taskById = new Map((Array.isArray(linkTasks) && linkTasks.length ? linkTasks : tasks).map((task) => [String(task.id || ''), task]))
   for (const todo of Array.isArray(todos) ? todos : []) {
     if (!todo || (todo.status && todo.status !== '已确认')) continue
     const priority = todo.priority || computePriority(todo)
@@ -46,7 +47,10 @@ export function buildAttention({ todos = [], tasks = [], now = new Date(), limit
       title: String(todo.title || ''),
       status: String(todo.status || ''),
       due: dueOf(todo) || null,
-      sessionId: (todo.source && todo.source.sessionId) || todo.sessionId || null,
+      sessionId: (todo.source && todo.source.sessionId) || todo.sessionId || (() => {
+        const ref = /(?:^|\s)(K-\d{3,})/.exec(String(todo.title || ''))
+        return ref && taskById.get(ref[1]) ? taskById.get(ref[1]).jumpSessionId || taskById.get(ref[1]).sessionId || null : null
+      })(),
       urgency: Math.max(1, Math.min(3, Number(todo.urgency) || 1)),
       importance: Math.max(1, Math.min(3, Number(todo.importance) || 1)),
       level: levelOf({ priority }),
@@ -65,7 +69,7 @@ export function buildAttention({ todos = [], tasks = [], now = new Date(), limit
       title: String(task.title || ''),
       status: String(task.status || ''),
       due: dueOf(task) || null,
-      sessionId: task.sessionId || null,
+      sessionId: task.jumpSessionId || task.sessionId || null,
       urgency: Math.max(1, Math.min(3, Number(task.urgency) || 1)),
       importance: Math.max(1, Math.min(3, Number(task.importance) || 1)),
       level: levelOf({ priority }),

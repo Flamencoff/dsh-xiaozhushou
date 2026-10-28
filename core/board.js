@@ -20,7 +20,7 @@ function signalOf(attention, fallback) {
 
 export function buildState(runtime = {}) {
   const stats = safeStats(runtime)
-  const attention = buildAttention({ todos: stats.confirmed, tasks: runtime.openTasks || [], now: new Date(runtime.computedAt || Date.now()) })
+  const attention = buildAttention({ todos: stats.confirmed, tasks: runtime.openTasks || [], linkTasks: runtime.allTasks || [], now: new Date(runtime.computedAt || Date.now()) })
   const ranked = rankByPriority(stats.confirmed)
   const top = ranked.slice(0, 3).map((item) => ({
     id: item.id,
@@ -66,7 +66,7 @@ export function buildState(runtime = {}) {
 export function buildBoard(runtime = {}) {
   const at = runtime.computedAt || new Date().toISOString()
   const stats = safeStats(runtime)
-  const attention = buildAttention({ todos: stats.confirmed, tasks: runtime.openTasks || [], now: new Date(runtime.computedAt || Date.now()) })
+  const attention = buildAttention({ todos: stats.confirmed, tasks: runtime.openTasks || [], linkTasks: runtime.allTasks || [], now: new Date(runtime.computedAt || Date.now()) })
   const ranked = rankByPriority(stats.confirmed)
   const signal = signalOf(attention, overallSignal(stats.confirmed))
   const snapshot = runtime.snapshot || { sessions: [], total: 0 }

@@ -162,7 +162,7 @@ sandbox 下只读两类会话：标题以 `[实验]` 开头的测试会话，以
 ## 自测与自检
 
 ```sh
-node test/harness.mjs          # 206 项自测
+node test/harness.mjs          # 208 项自测
 node scripts/check-release.mjs # 发布自检（版本/包体/个人痕迹/文档）
 node scripts/check-imports.mjs # 模块依赖体检（无循环、无外部依赖）
 ```
@@ -192,7 +192,7 @@ node scripts/check-imports.mjs # 模块依赖体检（无循环、无外部依�
 | `core/` | 38 个纯逻辑模块（台账、提醒、史官、长期记忆、任务板、CEO 执行、模型调用等） |
 | `roles/` | 三个角色 preset 与身份提示词 |
 | `locale/` | 中英文文案 |
-| `test/harness.mjs` | 零依赖自测台（206 项） |
+| `test/harness.mjs` | 零依赖自测台（208 项） |
 | `scripts/` | 发布自检、依赖体检、市场索引生成 |
 | `docs/` | 架构、发布流程、隐私说明、截图 |
 

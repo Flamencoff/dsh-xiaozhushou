@@ -21,6 +21,7 @@ window.__ModuleLoader__.load({
     const API = '/api/dsh-xiaozhushou'
     // 换图片时只改这个版本号，浏览器就不会吃旧缓存（不用重启）
     const ASSET_V = 'r20261026a'
+    let workspaceNavigation = null
     const PET_HIDDEN_KEY = 'steward-pet-hidden'
     const PET_VIS_EVENT = 'steward-pet-visibility'
     const BLINK_DEMO_KEY = 'steward-blink-demo'
@@ -403,6 +404,12 @@ window.__ModuleLoader__.load({
         return []
       }
     }
+    // 看板是给人看的：编号只留给会话/操作，不在气泡和事项标题里露出来
+    function displayText(value) {
+      const text = String(value == null ? '' : value).replace(/(?:^|[\s（(【])[KT]-\d{3,}(?=$|[\s）)】,，。:：])/g, ' ').replace(/\s{2,}/g, ' ').trim()
+      return text || String(value == null ? '' : value)
+    }
+
     function writeChatLog(role, lines) {
       try {
         window.localStorage.setItem(CHAT_KEY(role), JSON.stringify((lines || []).slice(-20)))
@@ -787,8 +794,16 @@ window.__ModuleLoader__.load({
           setMsg('这条事项没有关联会话')
           return
         }
-        const url = window.location.origin + '/?session=' + encodeURIComponent(item.sessionId)
-        try { window.location.assign(url) } catch { setMsg('打不开会话：' + item.sessionId) }
+        if (workspaceNavigation && typeof workspaceNavigation.openSession === 'function') {
+          try {
+            workspaceNavigation.openSession(item.sessionId)
+            return
+          } catch (e) {
+            setMsg('跳转失败：' + String(e && e.message ? e.message : e))
+            return
+          }
+        }
+        setMsg('当前 DSH 没有提供会话跳转接口')
       }
 
       async function saveEdit() {
@@ -896,8 +911,8 @@ window.__ModuleLoader__.load({
                 return rows.slice(0, 6).map((item) => h('div', { key: item.kind + '-' + item.id, style: { display: 'flex', alignItems: 'center', gap: 6, padding: '3px 0', minWidth: 0 } },
                   levelTag(item.level, item.label),
                   h('span', { className: 'ke-mini', style: { flex: '0 0 46px' } }, item.sourceLabel),
-                  h('span', { className: 'nm', style: { flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, item.title),
-                  h('span', { className: 'ke-mini' }, item.due || '')))
+                  h('span', { className: 'nm', style: { flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, displayText(item.title)),
+                  h('span', { className: 'ke-mini' }, item.due ? '截止 ' + item.due.slice(5) : '无截止')))
               })(),
             ),
             ),
@@ -910,7 +925,8 @@ window.__ModuleLoader__.load({
                     h('div', { style: { display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 } },
                       levelTag(item.level, item.label),
                       h('span', { className: 'ke-mini', style: { flex: '0 0 46px' } }, item.sourceLabel),
-                      h('span', { className: 'nm', style: { flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, item.title),
+                      h('span', { className: 'nm', style: { flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, displayText(item.title)),
+                      h('span', { className: 'ke-mini', style: { flex: '0 0 64px', textAlign: 'right' } }, item.due ? '截止 ' + item.due.slice(5) : '无截止'),
                       h('span', { className: 'ke-mini', style: { flex: '0 0 70px', textAlign: 'right' } }, item.durationLabel || '')),
                     h('div', { style: { display: 'flex', gap: 4, marginTop: 2, flexWrap: 'wrap' } },
                       h('button', { className: 'ke-btn', disabled: todoBusy, onClick: () => beginAdjust(item) }, '调整'),
@@ -941,7 +957,7 @@ window.__ModuleLoader__.load({
                 rows.map((t) => h('div', { key: t.id, style: { display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4, flexWrap: 'wrap' } },
                   editId === t.id
                     ? h('input', { type: 'text', value: editText, onChange: (ev) => setEditText(ev.target.value), style: { flex: '1 1 160px', fontSize: 13, padding: '2px 6px' } })
-                    : h('span', { style: { flex: '1 1 120px' } }, t.title),
+                    : h('span', { style: { flex: '1 1 120px' } }, displayText(t.title)),
                   h('input', {
                     type: 'date',
                     value: dueDraft[t.id] || '',
@@ -957,7 +973,7 @@ window.__ModuleLoader__.load({
                   h('button', { className: 'ke-btn', disabled: todoBusy, title: '暂停，不删除', onClick: () => updateTodo(t.id, { action: 'pause' }) }, '划掉'))))
             })(),
             (b.todos && b.todos.pendingHidden ? h('div', { className: 'ke-mini' }, '还有 ' + b.todos.pendingHidden + ' 条未显示（按日期排序，处理完上面的就会露出来）') : null),
-            msg ? h('div', { className: 'ke-mini', style: { marginTop: 4 } }, msg) : null,
+            msg ? h('div', { className: 'ke-mini', style: { marginTop: 4 } }, displayText(msg)) : null,
             ),
             ),
               h('div', { className: 'ke-left2-main' },
@@ -968,7 +984,7 @@ window.__ModuleLoader__.load({
                   h('div', { key: i, className: 'ke-msg-row' },
                     h('span', { className: 'ke-msg-no' }, (i + 1) + '.'),
                     h('div', { className: 'ke-msg-col' },
-                      h('div', { className: 'ke-msg ' + (line.role === 'bot' ? 'bot' : (line.role === 'me' || line.role === 'user') ? 'me' : 'sys') }, line.text),
+                      h('div', { className: 'ke-msg ' + (line.role === 'bot' ? 'bot' : (line.role === 'me' || line.role === 'user') ? 'me' : 'sys') }, displayText(line.text)),
                       handoffButtons('secretary', line, i)))),
                 msg ? h('div', { className: 'ke-msg sys' }, msg) : null),
             h('div', { className: 'ke-add' },
@@ -1004,7 +1020,7 @@ window.__ModuleLoader__.load({
                   h('div', { key: i, className: 'ke-msg-row' },
                     h('span', { className: 'ke-msg-no' }, (i + 1) + '.'),
                     h('div', { className: 'ke-msg-col' },
-                      h('div', { className: 'ke-msg ' + (line.role === 'bot' ? 'bot' : (line.role === 'me' || line.role === 'user') ? 'me' : 'sys') }, line.text))))),
+                      h('div', { className: 'ke-msg ' + (line.role === 'bot' ? 'bot' : (line.role === 'me' || line.role === 'user') ? 'me' : 'sys') }, displayText(line.text)))))),
               h('div', { className: 'ke-add' },
                 h('input', {
                   type: 'text',
@@ -1033,7 +1049,7 @@ window.__ModuleLoader__.load({
                   h('div', { key: i, className: 'ke-msg-row' },
                     h('span', { className: 'ke-msg-no' }, (i + 1) + '.'),
                     h('div', { className: 'ke-msg-col' },
-                      h('div', { className: 'ke-msg ' + (line.role === 'bot' ? 'bot' : (line.role === 'me' || line.role === 'user') ? 'me' : 'sys') }, line.text),
+                      h('div', { className: 'ke-msg ' + (line.role === 'bot' ? 'bot' : (line.role === 'me' || line.role === 'user') ? 'me' : 'sys') }, displayText(line.text)),
                       handoffButtons('historian', line, i))))),
               h('div', { className: 'ke-add' },
                 h('input', {
@@ -1302,7 +1318,7 @@ window.__ModuleLoader__.load({
               (s.attention && s.attention.items && s.attention.items.length)
                 ? s.attention.items.slice(0, 3).map((item, i) => h('div', { className: 'row', key: 'att-' + i },
                     levelTag(item.level, item.label),
-                    h('span', { className: 'nm' }, item.sourceLabel + ' · ' + (item.title || '')),
+                    h('span', { className: 'nm' }, item.sourceLabel + ' · ' + displayText(item.title)),
                     h('span', { className: 'due' }, item.due || item.status || '')))
                 : null,
               (!s.attention || !s.attention.items || !s.attention.items.length)
@@ -1338,8 +1354,9 @@ window.__ModuleLoader__.load({
     }
 
     return {
-      inject: ['slots'],
+      inject: ['slots', 'uiWorkspace'],
       apply(ctx) {
+        workspaceNavigation = ctx.uiWorkspace || (typeof ctx.get === 'function' ? ctx.get('uiWorkspace') : null) || null
         // 插槽注册随插件 fiber 一起卸载；这里不额外包 ctx.effect（照官方模板写法）。
         ctx.slots.inject('sidebar.panellist', () =>
           ctx.slots.register(
