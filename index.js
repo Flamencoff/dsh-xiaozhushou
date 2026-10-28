@@ -839,6 +839,43 @@ export function apply(ctx, configIn = {}) {
       }),
     )
 
+    // 待办操作：调整紧急/重要、改 deadline、划掉=暂停（不是删除）
+    disposers.push(
+      ctx.webServer.register({
+        kind: 'exact',
+        path: `${ROUTE_PREFIX}/todo/update`,
+        handler: async (req, res) => {
+          if (req.method && String(req.method).toUpperCase() !== 'POST') {
+            return sendJson(res, 405, { ok: false, code: 'method_not_allowed', message: '这个接口只接受 POST' })
+          }
+          if (!writeGuard(req, res)) return
+          const body = await readJsonBody(req)
+          if (body && body.__invalidJson) return sendJson(res, 400, { ok: false, code: 'invalid_json', message: '请求体不是合法 JSON' })
+          const id = String((body && body.id) || '')
+          const action = String((body && body.action) || '')
+          if (!id) return sendJson(res, 200, { ok: false, code: 'empty', message: '给待办 id' })
+          let result
+          if (/^K-/.test(id)) {
+            const task = ceoRoleChat.readTasks().find((item) => item.id === id)
+            if (!task) result = { ok: false, code: 'not_found', message: '没找到 ' + id }
+            else if (action === 'adjust') {
+              const priority = computePriority({ urgency: body && body.urgency, importance: body && body.importance })
+              result = ceoRoleChat.patchTask(id, { urgency: body && body.urgency, importance: body && body.importance, priority })
+            } else if (action === 'due') result = ceoRoleChat.patchTask(id, { due: String((body && body.due) || '').slice(0, 10) || null })
+            else if (action === 'pause') result = ceoRoleChat.setTaskStatus(id, '已暂停')
+            else result = { ok: false, code: 'bad_action', message: '不认识的动作：' + action }
+          } else if (action === 'adjust') result = ledger.adjust(id, { urgency: body && body.urgency, importance: body && body.importance })
+          else if (action === 'due') result = ledger.edit(id, { due: body && body.due })
+          else if (action === 'pause') result = ledger.pause(id)
+          else if (action === 'resume') result = ledger.resume(id)
+          else result = { ok: false, code: 'bad_action', message: '不认识的动作：' + action }
+          audit.write({ role: 'user', action: 'todo:' + action, target: id, result: result.ok ? 'ok' : 'rejected', reason: result.ok ? '' : result.code })
+          recompute()
+          sendJson(res, 200, result)
+        },
+      }),
+    )
+
     // 2026-10-26 新增：按钮开新会话（点击=用户同意；仍受 4 次/小时限流）
     disposers.push(
       ctx.webServer.register({

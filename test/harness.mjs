@@ -169,13 +169,13 @@ test('宿主半导出 apply 与 inject', () => {
   assert.deepEqual(Array.from(mod.inject), ['webServer'])
 })
 
-test('apply() 注册 26 条路由（含 handoff / task status / 开任务会话），启动后即可取数', async () => {
+test('apply() 注册 27 条路由（含 handoff / task status / 开任务会话），启动后即可取数', async () => {
   const dir = freshDir('routes')
   const { ctx, routes, disposers } = makeCtx(dir)
   mod.apply(ctx, { startupRefreshMs: 0 })
   await new Promise((resolve) => setTimeout(resolve, 30))
 
-  assert.equal(routes.size, 26)
+  assert.equal(routes.size, 27)
   for (const [path, route] of routes) {
     assert.equal(route.kind, 'exact', path + ' 应为 exact')
   }
@@ -203,7 +203,7 @@ test('D-16 守卫：发布文档都写清"24 条路由 = 本机回环接口"', (
     const text = readFileSync(join(pkgDir, rel), 'utf8')
     assert.ok(/127\.0\.0\.1/.test(text), rel + ' 要写清监听在 127.0.0.1')
     assert.ok(/回环/.test(text), rel + ' 要写明是回环接口')
-    assert.ok(/26 条/.test(text), rel + ' 要点明 26 条路由')
+    assert.ok(/27 条/.test(text), rel + ' 要点明 27 条路由')
   }
   const index = readFileSync(join(pkgDir, 'index.js'), 'utf8')
   assert.ok(!/\.listen\(/.test(index), '插件不许自己开监听端口（必须挂在宿主 webServer 上）')
@@ -235,6 +235,23 @@ test('sessionQuery 不可用时降级，不报 500', async () => {
 })
 
 /* ── 台账状态机 ───────────────────────────────────────────── */
+test('待办：调整层级、划掉=暂停、恢复，不丢数据', () => {
+  const dir = freshDir('ledger-pause')
+  const store = createStore(dir)
+  const ledger = createLedger(store)
+  const made = ledger.add({ title: '交材料', urgency: 1, importance: 1 })
+  ledger.confirm(made.item.id)
+  const adjusted = ledger.adjust(made.item.id, { urgency: 3, importance: 2 })
+  assert.equal(adjusted.ok, true)
+  assert.equal(adjusted.item.urgency, 3)
+  assert.equal(adjusted.item.importance, 2)
+  assert.equal(ledger.pause(made.item.id).item.status, '已暂停')
+  assert.equal(ledger.stats().pausedCount, 1)
+  assert.equal(ledger.stats().confirmed.length, 0, '暂停后不再参与提醒')
+  assert.equal(ledger.resume(made.item.id).item.status, '已确认')
+  assert.equal(ledger.stats().confirmed.length, 1)
+})
+
 test('台账：候选 → 已确认 → 已完成；非法迁移被拒', () => {
   const dir = freshDir('ledger')
   const store = createStore(dir)

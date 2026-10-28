@@ -145,9 +145,9 @@ target = <本仓库绝对路径或 tgz 路径>
 sandbox 下只读两类会话：标题以 `[实验]` 开头的测试会话，以及三个角色自己的会话（`dsh小助手 · 秘书 / CEO / 史官 对话`）。
 真实工作会话会被跳过并在结果里计数（`filteredByScope`）；想恢复读全部就把 `mode` 改回 `all`。
 
-## 接口与网络边界（26 条本地回环路由）
+## 接口与网络边界（27 条本地回环路由）
 
-- 插件向 DSH **本机 Web 服务**注册 26 条 HTTP 路由，全部挂在 `/api/dsh-xiaozhushou/*` 下，地址形如 `http://127.0.0.1:<端口>/api/dsh-xiaozhushou/health`；
+- 插件向 DSH **本机 Web 服务**注册 27 条 HTTP 路由，全部挂在 `/api/dsh-xiaozhushou/*` 下，地址形如 `http://127.0.0.1:<端口>/api/dsh-xiaozhushou/health`；
 - 它们是**回环接口**：只随 DSH 自己的 Web 服务监听 `127.0.0.1`（localhost），插件**不另开端口、不监听 `0.0.0.0`、不对外提供网关/代理**；
 - 端口每次启动会变，脚本调用先探 `/health`；写接口只接受 `POST`，并拦截跨源提交（`Origin` 与 `Host` 不一致直接 403）；
 - 也就是说：别人在另一台机器上**连不到**这些接口；它们只服务本机页面上的看板/浮窗。
@@ -162,7 +162,7 @@ sandbox 下只读两类会话：标题以 `[实验]` 开头的测试会话，以
 ## 自测与自检
 
 ```sh
-node test/harness.mjs          # 204 项自测
+node test/harness.mjs          # 206 项自测
 node scripts/check-release.mjs # 发布自检（版本/包体/个人痕迹/文档）
 node scripts/check-imports.mjs # 模块依赖体检（无循环、无外部依赖）
 ```
@@ -187,12 +187,12 @@ node scripts/check-imports.mjs # 模块依赖体检（无循环、无外部依�
 
 | 路径 | 作用 |
 |---|---|
-| `index.js` | 宿主半入口：26 条 HTTP 路由 + 角色/工具/定时器注册 |
+| `index.js` | 宿主半入口：27 条 HTTP 路由 + 角色/工具/定时器注册 |
 | `client.js` | 客户端半：侧栏图标 + 整页看板 + 浮窗 |
-| `core/` | 37 个纯逻辑模块（台账、提醒、史官、长期记忆、任务板、CEO 执行、模型调用等） |
+| `core/` | 38 个纯逻辑模块（台账、提醒、史官、长期记忆、任务板、CEO 执行、模型调用等） |
 | `roles/` | 三个角色 preset 与身份提示词 |
 | `locale/` | 中英文文案 |
-| `test/harness.mjs` | 零依赖自测台（204 项） |
+| `test/harness.mjs` | 零依赖自测台（206 项） |
 | `scripts/` | 发布自检、依赖体检、市场索引生成 |
 | `docs/` | 架构、发布流程、隐私说明、截图 |
 

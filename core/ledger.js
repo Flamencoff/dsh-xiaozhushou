@@ -7,11 +7,12 @@
  * 变更权归 CEO（会话）或用户经面板指令；秘书只能 add（R-DAT-02）。
  */
 
-const STATUS = { CANDIDATE: '候选', CONFIRMED: '已确认', DONE: '已完成', DROPPED: '已忽略' }
+const STATUS = { CANDIDATE: '候选', CONFIRMED: '已确认', PAUSED: '已暂停', DONE: '已完成', DROPPED: '已忽略' }
 
 const ALLOWED = {
-  候选: ['已确认', '已忽略'],
-  已确认: ['已完成', '已忽略'],
+  候选: ['已确认', '已忽略', '已暂停'],
+  已确认: ['已完成', '已忽略', '已暂停'],
+  已暂停: ['已确认', '已忽略'],
   已完成: [],
   已忽略: [],
 }
@@ -143,6 +144,32 @@ export function createLedger(store) {
     return transition(id, STATUS.DROPPED)
   }
 
+  function pause(id) {
+    return transition(id, STATUS.PAUSED)
+  }
+
+  function resume(id) {
+    return transition(id, STATUS.CONFIRMED)
+  }
+
+  function adjust(id, input = {}) {
+    const item = find(id)
+    if (!item) return fail('not_found', '没找到 ' + id + '，可能记错编号了')
+    if (!['候选', '已确认', '已暂停'].includes(item.status)) return fail('bad_state', '这条待办现在的状态不能调整')
+    const patch = {}
+    if (input.urgency !== undefined) patch.urgency = clampLevel(input.urgency)
+    if (input.importance !== undefined) patch.importance = clampLevel(input.importance)
+    if (!Object.keys(patch).length) return fail('no_change', '没给要调整的层级')
+    patch.updatedAt = new Date().toISOString()
+    const before = { ...item }
+    Object.assign(item, patch)
+    if (!persist()) {
+      Object.assign(item, before)
+      return fail('write_failed', '写不进去（磁盘满/只读/文件被占用），没调整')
+    }
+    return { ok: true, item }
+  }
+
   function doneAt(now) {
     const d = now || new Date()
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
@@ -210,6 +237,8 @@ export function createLedger(store) {
     // 待确认清单（只给标题用；CEO 的四问需要知道"有哪些事悬着"）
     pending: items.filter((item) => item.status === STATUS.CANDIDATE).sort(byDue),
       pendingCount: items.filter((item) => item.status === STATUS.CANDIDATE).length,
+      pausedCount: items.filter((item) => item.status === STATUS.PAUSED).length,
+      paused: items.filter((item) => item.status === STATUS.PAUSED).sort(byDue),
       doneCount: items.filter((item) => item.status === STATUS.DONE).length,
       // FIX-06：只算今天完成的（以前拿累计数说'今天完成'
       doneToday: items.filter((item) => item.status === STATUS.DONE && String(item.completedAt || item.updatedAt || '').slice(0, 10) === doneAt()).length,
@@ -218,7 +247,7 @@ export function createLedger(store) {
     }
   }
 
-  return { add, confirm, drop, done, edit, list, find, stats, archiveWeek, STATUS }
+  return { add, confirm, drop, pause, resume, adjust, done, edit, list, find, stats, archiveWeek, STATUS }
 }
 
 /* ── 小工具 ─────────────────────────────────────────────── */

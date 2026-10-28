@@ -544,6 +544,9 @@ window.__ModuleLoader__.load({
       // 2026-10-26 修 B-01：界面以前只有"记一条"，候选不显示、没有确认/划掉/完成，
       // 普通用户永远走不到"确认 → 到点提醒"这一步。这里补上最小闭环。
       const [dueDraft, setDueDraft] = React.useState({})
+      const [todoAction, setTodoAction] = React.useState('')
+      const [adjustDraft, setAdjustDraft] = React.useState({ urgency: 1, importance: 1 })
+      const [todoBusy, setTodoBusy] = React.useState(false)
 
       async function runCommand(text) {
         if (busy) return
@@ -736,6 +739,58 @@ window.__ModuleLoader__.load({
         setEditText(item.title || '')
       }
 
+      async function updateTodo(id, payload) {
+        if (todoBusy) return
+        setTodoBusy(true)
+        setMsg('')
+        try {
+          const res = await fetch(API + '/todo/update', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id, ...payload }) })
+          const json = await res.json()
+          if (json && json.ok) {
+            setTodoAction('')
+            setMsg(json.item && json.item.title ? '已更新：' + json.item.title : '已更新')
+            if (typeof reload === 'function') reload()
+          } else {
+            setMsg((json && json.message) || '没改成')
+          }
+        } catch (e) {
+          setMsg('没改成：' + String(e && e.message ? e.message : e))
+        }
+        setTodoBusy(false)
+      }
+
+      function beginAdjust(item) {
+        setTodoAction('adjust:' + item.id)
+        setAdjustDraft({ urgency: Number(item.urgency) || 1, importance: Number(item.importance) || 1 })
+      }
+
+      function beginDue(item) {
+        setTodoAction('due:' + item.id)
+        setDueDraft({ ...dueDraft, [item.id]: String(item.due || '') })
+      }
+
+      function saveDue(item) {
+        const due = String(dueDraft[item.id] || '').trim()
+        if (!due) {
+          setMsg('先选个日期')
+          return
+        }
+        updateTodo(item.id, { action: 'due', due })
+      }
+
+      function pauseTodo(item) {
+        updateTodo(item.id, { action: 'pause' })
+      }
+
+      function jumpTodo(item) {
+        if (!item.sessionId) {
+          setMsg('这条事项没有关联会话')
+          return
+        }
+        const url = window.location.origin + '/?session=' + encodeURIComponent(item.sessionId)
+        try { window.location.assign(url) } catch { setMsg('打不开会话：' + item.sessionId) }
+      }
+
       async function saveEdit() {
         const title = editText.trim()
         if (!editId || !title) return
@@ -851,11 +906,32 @@ window.__ModuleLoader__.load({
               h('span', { className: 'w' }, '全部事项 ' + ((b.attention && b.attention.count) || 0) + ' · 待确认 ' + ((b.todos && b.todos.pendingCount) || 0))),
             h('div', { className: 'ke-card ke-kv ke-scroll', style: { maxHeight: 150, marginBottom: 6 } },
               (b.attention && b.attention.items && b.attention.items.length)
-                ? b.attention.items.map((item) => h('div', { key: 'todo-' + item.kind + '-' + item.id, style: { display: 'flex', alignItems: 'center', gap: 6, padding: '3px 0', minWidth: 0 } },
-                    levelTag(item.level, item.label),
-                    h('span', { className: 'ke-mini', style: { flex: '0 0 46px' } }, item.sourceLabel),
-                    h('span', { className: 'nm', style: { flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, item.title),
-                    h('span', { className: 'ke-mini', style: { flex: '0 0 70px', textAlign: 'right' } }, item.durationLabel || '')))
+                ? b.attention.items.map((item) => h('div', { key: 'todo-' + item.kind + '-' + item.id, style: { padding: '4px 0', borderBottom: '1px dashed #eef0f3' } },
+                    h('div', { style: { display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 } },
+                      levelTag(item.level, item.label),
+                      h('span', { className: 'ke-mini', style: { flex: '0 0 46px' } }, item.sourceLabel),
+                      h('span', { className: 'nm', style: { flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, item.title),
+                      h('span', { className: 'ke-mini', style: { flex: '0 0 70px', textAlign: 'right' } }, item.durationLabel || '')),
+                    h('div', { style: { display: 'flex', gap: 4, marginTop: 2, flexWrap: 'wrap' } },
+                      h('button', { className: 'ke-btn', disabled: todoBusy, onClick: () => beginAdjust(item) }, '调整'),
+                      h('button', { className: 'ke-btn', disabled: todoBusy, title: '修改 deadline', onClick: () => beginDue(item) }, '📅'),
+                      h('button', { className: 'ke-btn', disabled: todoBusy || !item.sessionId, title: item.sessionId ? '跳到对应会话' : '这条事项没有关联会话', onClick: () => jumpTodo(item) }, '跳转'),
+                      h('button', { className: 'ke-btn', disabled: todoBusy, title: '暂停，不删除', onClick: () => pauseTodo(item) }, '划掉')),
+                    todoAction === 'adjust:' + item.id
+                      ? h('div', { style: { display: 'flex', alignItems: 'center', gap: 5, marginTop: 3, flexWrap: 'wrap' } },
+                          h('span', { className: 'ke-mini' }, '紧急'),
+                          h('select', { value: adjustDraft.urgency, onChange: (e) => setAdjustDraft({ ...adjustDraft, urgency: Number(e.target.value) }) }, [1, 2, 3].map((n) => h('option', { key: n, value: n }, String(n)))),
+                          h('span', { className: 'ke-mini' }, '重要'),
+                          h('select', { value: adjustDraft.importance, onChange: (e) => setAdjustDraft({ ...adjustDraft, importance: Number(e.target.value) }) }, [1, 2, 3].map((n) => h('option', { key: n, value: n }, String(n)))),
+                          h('button', { className: 'ke-btn', disabled: todoBusy, onClick: () => updateTodo(item.id, { action: 'adjust', urgency: adjustDraft.urgency, importance: adjustDraft.importance }) }, '保存'),
+                          h('button', { className: 'ke-btn', onClick: () => setTodoAction('') }, '取消'))
+                      : null,
+                    todoAction === 'due:' + item.id
+                      ? h('div', { style: { display: 'flex', alignItems: 'center', gap: 5, marginTop: 3 } },
+                          h('input', { type: 'date', value: dueDraft[item.id] || '', onChange: (e) => setDueDraft({ ...dueDraft, [item.id]: e.target.value }), style: { fontSize: 11 } }),
+                          h('button', { className: 'ke-btn', disabled: todoBusy, onClick: () => saveDue(item) }, '保存'),
+                          h('button', { className: 'ke-btn', onClick: () => setTodoAction('') }, '取消'))
+                      : null))
                 : h('span', { className: 'ke-mini' }, '没有待办或进行中的 CEO 任务')),
             // 2026-10-26 修 B-01：候选（待确认）也列出来，每条给「确认/划掉」，确认前可填日期
             (function renderPending() {
@@ -878,7 +954,7 @@ window.__ModuleLoader__.load({
                       ? h('button', { className: 'ke-btn', onClick: saveEdit }, '保存')
                       : h('button', { className: 'ke-btn', disabled: busy, onClick: () => startEdit(t) }, '修改'),
                     editId === t.id ? h('button', { className: 'ke-btn', onClick: () => setEditId('') }, '取消') : null,
-                  h('button', { className: 'ke-btn', disabled: busy, onClick: () => runCommand('划掉 ' + t.id) }, '划掉'))))
+                  h('button', { className: 'ke-btn', disabled: todoBusy, title: '暂停，不删除', onClick: () => updateTodo(t.id, { action: 'pause' }) }, '划掉'))))
             })(),
             (b.todos && b.todos.pendingHidden ? h('div', { className: 'ke-mini' }, '还有 ' + b.todos.pendingHidden + ' 条未显示（按日期排序，处理完上面的就会露出来）') : null),
             msg ? h('div', { className: 'ke-mini', style: { marginTop: 4 } }, msg) : null,
