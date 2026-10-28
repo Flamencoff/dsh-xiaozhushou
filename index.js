@@ -51,7 +51,7 @@ import { createHistorianSchedule } from './core/historian-schedule.js'
 export const inject = ['webServer']
 
 // 版本号单一来源（守卫测试会校验它与 package.json 一致）
-const VERSION = '0.47.6'
+const VERSION = '0.47.7'
 
 function readBoardTasks(storeRef) {
   try {
@@ -484,8 +484,34 @@ export function apply(ctx, configIn = {}) {
   const ASSET_DIR = new URL('./assets/', import.meta.url)
   const PET_FILE = new URL('./assets/pet/pet.png', import.meta.url)
 
+  // 宿主连接准入：所有 API 路由先过 Connection 的 Host/Origin + 浏览器认证。
+  // 认证服务不可用时直接拒绝，不能只靠 Origin 判断。
+  const rawRegister = ctx.webServer.register.bind(ctx.webServer)
+  function guardedRegister(route) {
+    const original = route.handler
+    return rawRegister({
+      ...route,
+      handler: async (req, res) => {
+        const connection = safeGet(ctx, 'connection')
+        if (!connection || typeof connection.requestRejection !== 'function') {
+          return sendJson(res, 401, { ok: false, code: 'connection_unavailable', message: '宿主认证不可用，已拒绝访问' })
+        }
+        let rejection
+        try {
+          rejection = connection.requestRejection({ headers: (req && req.headers) || {} })
+        } catch {
+          return sendJson(res, 401, { ok: false, code: 'connection_rejected', message: '宿主连接准入失败，已拒绝访问' })
+        }
+        if (rejection) {
+          return sendJson(res, rejection, { ok: false, code: 'connection_rejected', message: '需要已认证的 DSH 连接' })
+        }
+        return original(req, res)
+      },
+    })
+  }
+
     disposers.push(
-      ctx.webServer.register({
+      guardedRegister({
         kind: 'exact',
         path: `${ROUTE_PREFIX}/state`,
         handler: (_req, res) => {
@@ -502,7 +528,7 @@ export function apply(ctx, configIn = {}) {
     )
 
     disposers.push(
-      ctx.webServer.register({
+      guardedRegister({
         kind: 'exact',
         path: `${ROUTE_PREFIX}/board`,
         handler: (_req, res) => {
@@ -515,7 +541,7 @@ export function apply(ctx, configIn = {}) {
 
     // 皮肤资源：浏览器只能通过 HTTP 取图，插件自带的 assets 由宿主发出去
     disposers.push(
-      ctx.webServer.register({
+      guardedRegister({
         kind: 'exact',
         path: `${ROUTE_PREFIX}/asset/pet`,
         handler: (_req, res) => {
@@ -531,7 +557,7 @@ export function apply(ctx, configIn = {}) {
       }),
     )
     disposers.push(
-      ctx.webServer.register({
+      guardedRegister({
         kind: 'exact',
         path: `${ROUTE_PREFIX}/asset/tail`,
         handler: (_req, res) => {
@@ -548,7 +574,7 @@ export function apply(ctx, configIn = {}) {
     )
 
     disposers.push(
-      ctx.webServer.register({
+      guardedRegister({
         kind: 'exact',
         path: `${ROUTE_PREFIX}/health`,
         handler: (_req, res) => {
@@ -617,7 +643,7 @@ export function apply(ctx, configIn = {}) {
       }),
     )
     disposers.push(
-      ctx.webServer.register({
+      guardedRegister({
         kind: 'exact',
         path: `${ROUTE_PREFIX}/command`,
         handler: async (req, res) => {
@@ -646,7 +672,7 @@ export function apply(ctx, configIn = {}) {
     )
 
     disposers.push(
-      ctx.webServer.register({
+      guardedRegister({
         kind: 'exact',
         path: `${ROUTE_PREFIX}/todo`,
         handler: async (req, res) => {
@@ -682,7 +708,7 @@ export function apply(ctx, configIn = {}) {
     )
 
     disposers.push(
-      ctx.webServer.register({
+      guardedRegister({
         kind: 'exact',
         path: `${ROUTE_PREFIX}/datadir`,
         handler: async (req, res) => {
@@ -723,7 +749,7 @@ export function apply(ctx, configIn = {}) {
     )
 
     disposers.push(
-      ctx.webServer.register({
+      guardedRegister({
         kind: 'exact',
         path: `${ROUTE_PREFIX}/handover`,
         handler: async (req, res) => {
@@ -764,7 +790,7 @@ export function apply(ctx, configIn = {}) {
     )
 
     disposers.push(
-      ctx.webServer.register({
+      guardedRegister({
         kind: 'exact',
         path: `${ROUTE_PREFIX}/historian/run`,
         handler: async (req, res) => {
@@ -798,7 +824,7 @@ export function apply(ctx, configIn = {}) {
 
     // 2026-10-26 新增：看板直接问 CEO（能直观看到模型版/规则版）
     disposers.push(
-      ctx.webServer.register({
+      guardedRegister({
         kind: 'exact',
         path: `${ROUTE_PREFIX}/ceo/analyze`,
         handler: async (req, res) => {
@@ -819,7 +845,7 @@ export function apply(ctx, configIn = {}) {
 
     // 2026-10-26 新增：改一条待办（标题/日期）
     disposers.push(
-      ctx.webServer.register({
+      guardedRegister({
         kind: 'exact',
         path: `${ROUTE_PREFIX}/todo/edit`,
         handler: async (req, res) => {
@@ -841,7 +867,7 @@ export function apply(ctx, configIn = {}) {
 
     // 待办操作：调整紧急/重要、改 deadline、划掉=暂停（不是删除）
     disposers.push(
-      ctx.webServer.register({
+      guardedRegister({
         kind: 'exact',
         path: `${ROUTE_PREFIX}/todo/update`,
         handler: async (req, res) => {
@@ -878,7 +904,7 @@ export function apply(ctx, configIn = {}) {
 
     // 2026-10-26 新增：按钮开新会话（点击=用户同意；仍受 4 次/小时限流）
     disposers.push(
-      ctx.webServer.register({
+      guardedRegister({
         kind: 'exact',
         path: `${ROUTE_PREFIX}/session/open`,
         handler: async (req, res) => {
@@ -906,7 +932,7 @@ export function apply(ctx, configIn = {}) {
 
     // 2026-10-26 夜：CEO 按钮「开新会话（任务）」——用输入框里的任务真建 steward-ceo 会话
     disposers.push(
-      ctx.webServer.register({
+      guardedRegister({
         kind: 'exact',
         path: `${ROUTE_PREFIX}/ceo/open-task`,
         handler: async (req, res) => {
@@ -951,7 +977,7 @@ export function apply(ctx, configIn = {}) {
 
     // 角色会话明文同步：看板聊天窗显示 CEO/秘书/史官会话里真正发生过的话
     disposers.push(
-      ctx.webServer.register({
+      guardedRegister({
         kind: 'exact',
         path: `${ROUTE_PREFIX}/role/history`,
         handler: async (req, res) => {
@@ -971,7 +997,7 @@ export function apply(ctx, configIn = {}) {
 
     // 2026-10-26 新增：CEO 聊天入口（看板右侧直接聊；带问题让模型结合台账回答）
     disposers.push(
-      ctx.webServer.register({
+      guardedRegister({
         kind: 'exact',
         path: `${ROUTE_PREFIX}/ceo/chat`,
         handler: async (req, res) => {
@@ -1069,7 +1095,7 @@ export function apply(ctx, configIn = {}) {
 
     // 2026-10-26 新增：问史官（读它自己的言行录；不开史官时明确拒绝）
     disposers.push(
-      ctx.webServer.register({
+      guardedRegister({
         kind: 'exact',
         path: `${ROUTE_PREFIX}/historian/ask`,
         handler: async (req, res) => {
@@ -1103,7 +1129,7 @@ export function apply(ctx, configIn = {}) {
 
     // 2026-10-26 夜：秘书聊天（陪伴型，固定会话）
     disposers.push(
-      ctx.webServer.register({
+      guardedRegister({
         kind: 'exact',
         path: `${ROUTE_PREFIX}/secretary/chat`,
         handler: async (req, res) => {
@@ -1155,7 +1181,7 @@ export function apply(ctx, configIn = {}) {
 
     // 2026-10-26 夜：史官聊天（必须已有手动开的史官会话，不自动开）
     disposers.push(
-      ctx.webServer.register({
+      guardedRegister({
         kind: 'exact',
         path: `${ROUTE_PREFIX}/historian/chat`,
         handler: async (req, res) => {
@@ -1186,7 +1212,7 @@ export function apply(ctx, configIn = {}) {
 
     // 2026-10-26 夜：把"你手动开的史官会话"绑给史官聊天（不自动开）
     disposers.push(
-      ctx.webServer.register({
+      guardedRegister({
         kind: 'exact',
         path: `${ROUTE_PREFIX}/historian/bind`,
         handler: async (req, res) => {
@@ -1206,7 +1232,7 @@ export function apply(ctx, configIn = {}) {
 
     // 2026-10-26 夜：归档一个会话（走宿主官方 workspaceController.archiveSession）
     disposers.push(
-      ctx.webServer.register({
+      guardedRegister({
         kind: 'exact',
         path: `${ROUTE_PREFIX}/session/archive`,
         handler: async (req, res) => {
@@ -1235,7 +1261,7 @@ export function apply(ctx, configIn = {}) {
 
     // 一键把三个角色会话建好并绑定
     disposers.push(
-      ctx.webServer.register({
+      guardedRegister({
         kind: 'exact',
         path: `${ROUTE_PREFIX}/roles/bootstrap`,
         handler: async (req, res) => {
@@ -1251,7 +1277,7 @@ export function apply(ctx, configIn = {}) {
 
     // 2026-10-26：手动刷新——立刻重算采集/看板/提醒（等同心跳跑一次）
     disposers.push(
-      ctx.webServer.register({
+      guardedRegister({
         kind: 'exact',
         path: `${ROUTE_PREFIX}/refresh`,
         handler: async (req, res) => {
@@ -1272,7 +1298,7 @@ export function apply(ctx, configIn = {}) {
 
     // 2026-10-26：把史官的问题+史实硬转给 CEO（按钮触发，不靠模型自觉）
     disposers.push(
-      ctx.webServer.register({
+      guardedRegister({
         kind: 'exact',
         path: `${ROUTE_PREFIX}/historian/handoff`,
         handler: async (req, res) => {
@@ -1300,7 +1326,7 @@ export function apply(ctx, configIn = {}) {
 
     // 2026-10-26：通用转交给 CEO（秘书/史官/看板按钮都走这里；硬动作）
     disposers.push(
-      ctx.webServer.register({
+      guardedRegister({
         kind: 'exact',
         path: `${ROUTE_PREFIX}/handoff`,
         handler: async (req, res) => {
@@ -1331,7 +1357,7 @@ export function apply(ctx, configIn = {}) {
 
     // 2026-10-26：看板 CEO 任务板按钮（接下/完成）
     disposers.push(
-      ctx.webServer.register({
+      guardedRegister({
         kind: 'exact',
         path: `${ROUTE_PREFIX}/task/status`,
         handler: async (req, res) => {

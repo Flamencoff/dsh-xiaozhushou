@@ -3,6 +3,13 @@
 本文件只记**用户可见**的变更，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。内部重构只写一行摘要，不写逐文件清单。
 
+## [0.47.7] - 2026-10-28
+
+### Fixed
+
+- 所有 HTTP 路由接入宿主 `ctx.connection` 准入，不再只检查 Origin；认证拒绝或服务不可用时返回 401。
+- 新增 connection 拒绝/缺失回归测试，209 passed。
+
 ## [0.47.6] - 2026-10-28
 
 ### Changed

@@ -80,6 +80,7 @@ function makeCtx(dir, opts = {}) {
     get(name) {
       // 用例可以覆盖任意宿主服务（D-01 的假 sessionController 就靠这个注入）
       if (opts.services && Object.prototype.hasOwnProperty.call(opts.services, name)) return opts.services[name]
+      if (name === 'connection') return { requestRejection: () => undefined }
       if (name === 'timer') return { interval: () => () => {} }
       if (name === 'workingDirectory') return { defaultDirectory: dir }
       if (name !== 'sessionQuery') return undefined
@@ -207,6 +208,22 @@ test('D-16 守卫：发布文档都写清"24 条路由 = 本机回环接口"', (
   }
   const index = readFileSync(join(pkgDir, 'index.js'), 'utf8')
   assert.ok(!/\.listen\(/.test(index), '插件不许自己开监听端口（必须挂在宿主 webServer 上）')
+})
+
+test('连接准入：Connection 拒绝或不可用时，所有路由拒绝访问', async () => {
+  const dir1 = freshDir('route-connection-reject')
+  const rejected = makeCtx(dir1, { services: { connection: { requestRejection: () => 401 } } })
+  mod.apply(rejected.ctx, { dataDir: dir1, startupRefreshMs: 0 })
+  const r1 = await call(rejected.routes, '/api/dsh-xiaozhushou/state')
+  assert.equal(r1.status, 401)
+  assert.equal(r1.json.code, 'connection_rejected')
+
+  const dir2 = freshDir('route-connection-missing')
+  const missing = makeCtx(dir2, { services: { connection: null } })
+  mod.apply(missing.ctx, { dataDir: dir2, startupRefreshMs: 0 })
+  const r2 = await call(missing.routes, '/api/dsh-xiaozhushou/state')
+  assert.equal(r2.status, 401)
+  assert.equal(r2.json.code, 'connection_unavailable')
 })
 
 test('采集只拿元数据：标题、cwd、live，不碰内容', async () => {
