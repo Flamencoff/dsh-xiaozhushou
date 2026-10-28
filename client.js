@@ -1002,6 +1002,15 @@ window.__ModuleLoader__.load({
       const interval = Number(lamp.interval) || Number(blinkMs) || 800
       const style = {
         background: 'radial-gradient(circle at 32% 26%, #fff 0%, ' + color + ' 38%, ' + dark + ' 100%)',
+        display: 'block',
+        width: '11px',
+        height: '11px',
+        minWidth: '11px',
+        minHeight: '11px',
+        aspectRatio: '1 / 1',
+        borderRadius: '50%',
+        boxSizing: 'border-box',
+        flex: '0 0 auto',
       }
       if (blinking) style.animationDuration = interval + 'ms'
       return h('span', { className: 'ke-lamp' + (blinking ? ' ke-blink' : ''), title: lamp.reason || '', style })
