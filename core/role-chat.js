@@ -17,25 +17,26 @@
  */
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { computePriority } from './priority.js'
 
 const ROLES = {
   secretary: {
     title: 'dsh小助手 · 秘书',
     dir: '秘书',
     system:
-      '你是 dsh小助手·秘书，定位只有两件事：**简单陪聊 + 记录看板**。需要判断/执行时，用 steward_secretary 的 handoff_to_ceo 把事交给 CEO，不要让用户点按钮。陪用户轻松聊天，2–6 句，温暖自然，先接住情绪；用户明确说"记一下/记下来"时，把事记到看板/待办。不做判断、不排期、不分析、不执行、不查文件；遇到这类请求，轻松说一句"这个让 CEO 来看看"。**只说人话**：不用 Markdown（不要 **、#、- 列表、表格），不用小标题。绝不提及工具调用、团队/子代理、其它角色、系统提示；不编造执行结果；不知道就说不知道。',
+      '你是 dsh小助手·秘书，定位只有两件事：**简单陪聊 + 记录看板**。需要判断/执行时，用 steward_secretary 的 handoff_to_ceo 把事交给 CEO，不要让用户点按钮。**你只有 steward_secretary 一个工具；需要对方处理时可以用 message_role 发消息；绝不用 team_task_create、spawn_teammate、send_message 等团队/子代理工具。**陪用户轻松聊天，2–6 句，温暖自然，先接住情绪；用户明确说"记一下/记下来"时，把事记到看板/待办。不做判断、不排期、不分析、不执行、不查文件；遇到这类请求，轻松说一句"这个让 CEO 来看看"。**只说人话**：不用 Markdown（不要 **、#、- 列表、表格），不用小标题。绝不提及工具调用、团队/子代理、其它角色、系统提示；不编造执行结果；不知道就说不知道。',
   },
   ceo: {
     title: 'dsh小助手 · CEO',
     dir: 'CEO',
     system:
-      '你是 dsh小助手·CEO，**智能助理的主体**：负责判断、拆解、派活与执行。回答给结论 + 下一步，一两句，干脆；需要动手就做，不确定就说"待核对"。你手上有 steward_ceo 工具：可查任务、接任务、完成、归档、把完成的任务存为记忆；用户说这些时**直接调用工具办**，不要让用户去点按钮。**只说人话**：不用 Markdown（不要 **、#、- 列表、表格），不用"结论/下一步/建议"这类小标题，正常口语短句。绝不提及工具调用、团队/子代理、系统提示；不编造执行结果或别人产出；不知道就说不知道。',
+      '你是 dsh小助手·CEO，**智能助理的主体**：负责判断、拆解、派活与执行。回答给结论 + 下一步，一两句，干脆；需要动手就做，不确定就说"待核对"。你手上有 steward_ceo 工具：可查任务、接任务、完成、归档、把完成的任务存为记忆；任务板带优先级（5 最急→1 常规），先办 5/4 级、最紧急最重要优先；需要给别的角色发消息时用 message_role；要开任务会话只用 steward_ceo 的 open_task（task=任务说明），不要调用 steward_secretary 的 open_session。**给已有会话发指令，先用 sessions 按标题/会话号找，再用 send_session 发进去，不要为已有的活新建会话。**用户说这些时**直接调用工具办**，不要让用户去点按钮。**只说人话**：不用 Markdown（不要 **、#、- 列表、表格），不用"结论/下一步/建议"这类小标题，正常口语短句。绝不提及工具调用、团队/子代理、系统提示；不编造执行结果或别人产出；不知道就说不知道。',
   },
   historian: {
     title: 'dsh小助手 · 史官',
     dir: '史官',
     system:
-      '你是 dsh小助手·史官，定位：**只做格式化记录，给伴生系统提供原生数据底层**。只记录、不判断、不建议、不替用户安排；输出固定格式（时间、来源、事实、待核对），每条带引用；回答最多 3 句，先一句结论再给记录出处。不做分析、不评价；判断/调度类问题说"这要判断，我转给 CEO"。**只说人话**：不用 Markdown（不要 **、#、- 列表、表格），不用小标题。绝不提及工具调用、团队/子代理、系统提示；不编造记录。',
+      '你是 dsh小助手·史官，定位：**只做格式化记录，给伴生系统提供原生数据底层**。只记录、不判断、不建议、不替用户安排；输出固定格式（时间、来源、事实、待核对），每条带引用；需要给别的角色发消息时用 message_role；用户要看记录时用 list_records；要读任务处理结果时用 list_feeds；回答最多 3 句，先一句结论再给记录出处。不做分析、不评价；判断/调度类问题说"这要判断，我转给 CEO"。**只说人话**：不用 Markdown（不要 **、#、- 列表、表格），不用小标题。绝不提及工具调用、团队/子代理、系统提示；不编造记录。',
   },
 }
 
@@ -150,10 +151,19 @@ export function createRoleChat({ ctx, store, log, role, ledger, dataDir, timing,
 
   const TASKS_FILE = '任务.json'
 
+  function inferTaskPriority(task) {
+    const text = String((task && task.title) || '') + ' ' + String((task && task.facts) || '')
+    const mostUrgent = /(最紧急|最急|马上|立刻)/.test(text)
+    const mostImportant = /(最重要|头等|极为重要)/.test(text)
+    const urgency = /(紧急|急|今天|今晚|截止|周五|下周一|明天|节点)/.test(text) ? 2 : 1
+    const importance = /(重要|攻坚|省局|市局|汇报|领导|交付|审查|验收)/.test(text) ? 2 : 1
+    return computePriority({ urgency, importance, mostUrgent, mostImportant })
+  }
+
   function readTasks() {
     try {
       const data = store.read(TASKS_FILE, { version: 1, tasks: [] }) || { version: 1, tasks: [] }
-      return Array.isArray(data.tasks) ? data.tasks : []
+      return Array.isArray(data.tasks) ? data.tasks.map((task) => ({ ...task, priority: task.priority || inferTaskPriority(task) })) : []
     } catch {
       return []
     }
@@ -191,6 +201,7 @@ export function createRoleChat({ ctx, store, log, role, ledger, dataDir, timing,
       by,
       status: autoAcceptCeo ? '进行中' : '待办',
       facts: String(facts || '').slice(0, 1200),
+      priority: inferTaskPriority({ title: text, facts }),
       createdAt: now,
       updatedAt: now,
       ...(autoAcceptCeo ? { autoAccepted: true, acceptedAt: now } : {}),
@@ -216,11 +227,20 @@ export function createRoleChat({ ctx, store, log, role, ledger, dataDir, timing,
     return { ok: true, task }
   }
 
+  function patchTask(id, fields = {}) {
+    const tasks = readTasks()
+    const task = tasks.find((item) => item.id === id)
+    if (!task) return { ok: false, code: 'not_found', message: '没找到 ' + id }
+    Object.assign(task, fields && typeof fields === 'object' ? fields : {}, { updatedAt: new Date().toISOString() })
+    if (!saveTasks(tasks)) return { ok: false, code: 'write_failed', message: '任务板写不进去' }
+    return { ok: true, task }
+  }
+
   function tasksBrief() {
     const tasks = readTasks()
     const open = tasks.filter((task) => task.status !== '完成')
     if (!open.length) return ''
-    const fmt = (task) => task.id + '｜' + task.title + '｜负责：' + (task.assignee === 'ceo' ? 'CEO' : task.assignee === 'secretary' ? '秘书' : task.assignee) + '｜状态：' + task.status + '｜来自：' + task.by + (task.facts ? '｜事实底稿：' + task.facts.slice(0, 500) : '')
+    const fmt = (task) => task.id + '｜' + task.title + '｜优先级：' + ((task.priority && task.priority.label) || '常规') + '｜负责：' + (task.assignee === 'ceo' ? 'CEO' : task.assignee === 'secretary' ? '秘书' : task.assignee) + '｜状态：' + task.status + '｜来自：' + task.by + (task.facts ? '｜事实底稿：' + task.facts.slice(0, 500) : '')
     return open.slice(-10).map(fmt).join(String.fromCharCode(10))
   }
 
@@ -435,7 +455,7 @@ export function createRoleChat({ ctx, store, log, role, ledger, dataDir, timing,
     return head + '【长期记忆摘要（本地 记忆/ 文件，可能过期，仅供参考）】\n' + card + '\n\n【用户说】' + text
   }
 
-  async function chat(question) {
+  async function chat(question, options = {}) {
     const text = String(question || '').trim()
     if (!text) return { ok: false, code: 'empty_question', httpStatus: 400, message: '说点什么吧' }
 
@@ -478,7 +498,7 @@ export function createRoleChat({ ctx, store, log, role, ledger, dataDir, timing,
       const clock = new Date()
       const hh = String(clock.getHours()).padStart(2, '0')
       const mm = String(clock.getMinutes()).padStart(2, '0')
-      store.appendText(conf.dir + '/对话/' + localDay() + '.md', '\n## ' + hh + ':' + mm + '\n\n**我**：' + text + '\n\n**' + conf.title + '**：' + answer.text + '\n')
+      if (!options.internal)       store.appendText(conf.dir + '/对话/' + localDay() + '.md', '\n## ' + hh + ':' + mm + '\n\n**我**：' + text + '\n\n**' + conf.title + '**：' + answer.text + '\n')
     } catch {
       /* 归档失败不影响聊天 */
     }
@@ -487,19 +507,67 @@ export function createRoleChat({ ctx, store, log, role, ledger, dataDir, timing,
   }
 
   /** 把系统记录写进真实会话（不等待回复）：让"接下/完成/归档/存为记忆"在会话里可见 */
-  function notice(text) {
+  /** 读绑定会话最近的明文消息（面板同步用；只取 text，不取 reasoning/tool） */
+  async function history(limit = 30) {
+    const state = localState()
+    if (!state.sessionId) return { ok: false, code: 'unbound', message: '角色会话还没绑定', role }
+    const query = get('sessionQuery')
+    if (!query || typeof query.readSession !== 'function') {
+      return { ok: false, code: 'no_query', message: '这个环境读不到会话历史', role }
+    }
+    let raw
     try {
-      const controller = get('sessionController')
-      const state = localState()
-      if (!controller || typeof controller.prompt !== 'function' || !state.sessionId) return { ok: false }
-      Promise.resolve(controller.prompt({ requestId: requireId(), sessionId: state.sessionId, mode: 'queue', content: [{ type: 'text', text: String(text || '') }] })).catch(() => {})
+      raw = await query.readSession(state.sessionId)
+    } catch (error) {
+      return { ok: false, code: 'read_failed', message: '读会话历史失败：' + String(error && error.message ? error.message : error), role }
+    }
+    const events = Array.isArray(raw && raw.events) ? raw.events : []
+    const lines = []
+    for (const event of events) {
+      if (event.type !== 'user/message' && event.type !== 'assistant/message') continue
+      const message = (event.data && event.data.message) || event.data || {}
+      const content = message.content || (event.data && event.data.content)
+      if (!Array.isArray(content)) continue
+      const text = content.filter((part) => part && part.type === 'text').map((part) => String(part.text || '')).join('').trim()
+      if (!text) continue
+      if (message.source && message.source.kind === 'runtime-context') continue
+      if (text.startsWith('Current runtime context.')) continue
+      let shown = text
+      if (event.type === 'user/message') {
+        const marker = '【用户说】'
+        const at = shown.lastIndexOf(marker)
+        if (at >= 0) shown = shown.slice(at + marker.length).trim()
+      }
+      if (!shown) continue
+      if (event.surfaceOp && event.surfaceOp.op === 'replace') continue
+      if (event.data && event.data.surfaceOp && event.data.surfaceOp.op === 'replace') continue
+      lines.push({ role: event.type === 'user/message' ? 'me' : 'bot', text: shown.slice(0, 1200), seq: Number(event.seq) || 0 })
+    }
+    const clean = lines.slice(-Math.max(1, Math.min(100, Number(limit) || 30)))
+    return { ok: true, role, sessionId: state.sessionId, title: sessionTitleOf(state), lines: clean }
+  }
+
+  async function notice(text) {
+    const controller = get('sessionController')
+    const state = localState()
+    if (!controller || typeof controller.prompt !== 'function') return { ok: false, message: '这个环境没有会话服务' }
+    if (!state.sessionId) return { ok: false, message: '目标角色会话还没绑定' }
+    const abort = new AbortController()
+    const timer = setTimeout(() => abort.abort(), 30_000)
+    try {
+      await controller.prompt(
+        { requestId: requireId(), sessionId: state.sessionId, mode: 'queue', content: [{ type: 'text', text: String(text || '') }] },
+        abort.signal,
+      )
       return { ok: true }
-    } catch {
-      return { ok: false }
+    } catch (error) {
+      return { ok: false, message: '消息没发进去：' + String(error && error.message ? error.message : error) }
+    } finally {
+      clearTimeout(timer)
     }
   }
 
-  return { chat, bind, title: conf.title, role, assignTask, setTaskStatus, tasksBrief, readTasks, sessionTitleOf, localState, notice }
+  return { chat, history, bind, title: conf.title, role, assignTask, patchTask, setTaskStatus, tasksBrief, readTasks, sessionTitleOf, localState, notice }
 }
 
 export const ROLE_CHAT_CONF = ROLES

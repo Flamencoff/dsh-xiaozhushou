@@ -7,9 +7,19 @@
 
 import { fourQuestions, singleLine } from './analysis.js'
 import { rankByPriority, groupByPriority, overallSignal, computePriority } from './priority.js'
+import { buildSchedule } from './estimate.js'
+import { buildSessionCards } from './session-cards.js'
+import { buildAttention } from './attention.js'
+
+function signalOf(attention, fallback) {
+  const priority = attention && attention.top && attention.top.priority
+  if (!priority) return fallback
+  return { level: priority.level, label: priority.label, dots: priority.dots, color: priority.color, blink: priority.blink }
+}
 
 export function buildState(runtime = {}) {
   const stats = safeStats(runtime)
+  const attention = buildAttention({ todos: stats.confirmed, tasks: runtime.openTasks || [], now: new Date(runtime.computedAt || Date.now()) })
   const ranked = rankByPriority(stats.confirmed)
   const top = ranked.slice(0, 3).map((item) => ({
     id: item.id,
@@ -21,7 +31,7 @@ export function buildState(runtime = {}) {
     color: item.priority.color,
   }))
   // 提醒长相由"优先级层"决定：5 级=3 红点+闪，4 级=2 红点，3 级=黄，2 级=橙，1 级=蓝
-  const signal = overallSignal(stats.confirmed)
+  const signal = signalOf(attention, overallSignal(stats.confirmed))
   const dot = signal.color
   const dots = signal.dots
   const blink = Boolean(signal.blink)
@@ -35,6 +45,7 @@ export function buildState(runtime = {}) {
     level: signal.level,
     levelLabel: signal.label,
     count: stats.confirmed.length,
+    attention,
     top,
     note: stats.confirmed.length ? '' : '今天没有已确认的待办',
     degraded: runtime.degraded || [],
@@ -46,8 +57,9 @@ export function buildState(runtime = {}) {
 export function buildBoard(runtime = {}) {
   const at = runtime.computedAt || new Date().toISOString()
   const stats = safeStats(runtime)
+  const attention = buildAttention({ todos: stats.confirmed, tasks: runtime.openTasks || [], now: new Date(runtime.computedAt || Date.now()) })
   const ranked = rankByPriority(stats.confirmed)
-  const signal = overallSignal(stats.confirmed)
+  const signal = signalOf(attention, overallSignal(stats.confirmed))
   const snapshot = runtime.snapshot || { sessions: [], total: 0 }
   const sessions = Array.isArray(snapshot.sessions) ? snapshot.sessions : []
   const live = sessions.filter((s) => s.live).length
@@ -93,9 +105,11 @@ export function buildBoard(runtime = {}) {
       // 0.47.0：带上开关与读取范围，界面别再说"只读 [实验]"（发布默认 all）
       enabled: Boolean(runtime.config && runtime.config.enabled && runtime.config.enabled.historian),
       scope: (runtime.config && runtime.config.historian && runtime.config.historian.scope && runtime.config.historian.scope.mode) || 'all',
-      today: { summary: '还没跑过史官：点「真跑一次（写盘）」才会记录', did: [], decided: [], followups: [] },
+      today: runtime.historianToday || { summary: '今天还没跑史官：点「真跑一次（写盘）」才会记录', did: [], decided: [], followups: [] },
     },
-    schedule: null,
+    schedule: buildSchedule({ todos: stats.confirmed, now: new Date(runtime.computedAt || Date.now()) }),
+    attention,
+    sessionCards: buildSessionCards({ snapshot, ledger: runtime.ledger, inbox: runtime.inbox, tasks: runtime.openTasks || [], now: new Date(runtime.computedAt || Date.now()) }),
     diagnostics: {
       skipped: stats.skipped + (runtime.collectSkipped || 0),
       degraded: runtime.degraded || [],

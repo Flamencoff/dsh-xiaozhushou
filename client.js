@@ -473,6 +473,34 @@ window.__ModuleLoader__.load({
         }
       }
 
+      // 看板聊天窗不只显示本地临时消息：首次打开时同步绑定会话里的真实明文
+      React.useEffect(() => {
+        let alive = true
+        async function syncHistory(role, setter) {
+          try {
+            const res = await fetch(API + '/role/history?role=' + role)
+            const json = await res.json()
+            if (!alive || !json || !json.ok || !Array.isArray(json.lines) || !json.lines.length) return
+            const incoming = json.lines.map((line) => ({ role: line.role === 'me' ? 'me' : 'bot', text: line.text }))
+            setter((prev) => {
+              const seen = new Set()
+              const merged = []
+              for (const line of prev.concat(incoming)) {
+                const key = line.role + '\u0000' + line.text
+                if (seen.has(key)) continue
+                seen.add(key)
+                merged.push(line)
+              }
+              return merged.slice(-10)
+            })
+          } catch {}
+        }
+        syncHistory('secretary', setChatLog)
+        syncHistory('ceo', setCeoLog)
+        syncHistory('historian', setHistLog)
+        return () => { alive = false }
+      }, [])
+
       React.useEffect(() => {
         writeChatLog('secretary', chatLog)
       }, [chatLog])
@@ -624,7 +652,7 @@ window.__ModuleLoader__.load({
             setDraft('')
             setUrgent(false)
             setImportant(false)
-            setMsg('记下了：' + json.item.id + '（' + (json.priority ? json.priority.label : '已记录') + '）')
+            setMsg('记下了：' + String((json.item && json.item.title) || '') + '（' + (json.priority ? json.priority.label : '已记录') + '）')
             if (typeof reload === 'function') reload()
           } else {
             setMsg((json && json.message) || '没记上')
@@ -747,15 +775,27 @@ window.__ModuleLoader__.load({
         }
       }
 
-      async function openSession() {
-        try {
-          // 合同字段是 agentPreset（宿主 spawner 只认它），别再只传 preset 而丢身份
-          const res = await fetch(API + '/session/open', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title: 'dsh小助手 · 秘书', prompt: '你好，我们开始吧。', agentPreset: 'steward-secretary' }) })
-          const json = await res.json()
-          setMsg(json && json.ok ? '新会话开好了：' + (json.sessionId || '') : ((json && json.message) || '没开成'))
-        } catch (e) {
-          setMsg('没开成：' + String(e && e.message ? e.message : e))
+      async function openTaskSession() {
+        const task = ceoDraft.trim()
+        if (!task) {
+          setCeoLog((prev) => prev.concat([{ role: 'sys', text: '先在输入框写清楚要开的任务，再点「开新会话（任务）」。' }]).slice(-10))
+          return
         }
+        if (ceoBusy) return
+        setCeoBusy(true)
+        try {
+          const res = await fetch(API + '/ceo/open-task', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ task }) })
+          const json = await res.json()
+          if (json && json.ok) {
+            setCeoLog((prev) => prev.concat([{ role: 'sys', text: String(json.message || '已开好 CEO 任务会话') }]).slice(-10))
+            setCeoDraft('')
+          } else {
+            setCeoLog((prev) => prev.concat([{ role: 'sys', text: '没开成：' + String((json && json.message) || '未知错误') }]).slice(-10))
+          }
+        } catch (e) {
+          setCeoLog((prev) => prev.concat([{ role: 'sys', text: '没开成：' + String(e && e.message ? e.message : e) }]).slice(-10))
+        }
+        setCeoBusy(false)
       }
 
       const b = data || {}
@@ -793,22 +833,32 @@ window.__ModuleLoader__.load({
           h('div', { className: 'ke-col' },
             h('div', { className: 'ke-left2' },
               h('div', { className: 'ke-left2-side' },
-            // ── 象限之上的一层：优先级（5 最急 → 1 常规） ──
+            // 统一事项：待办 + CEO 任务共用同一套优先级（不再各排各的）
             h('div', { className: 'ke-panel' }, h('div', { className: 'ke-blk', style: { marginTop: 0 } }, h('span', { className: 'h' }, '优先级'),
-              h('span', { className: 'w' }, '在四象限之上再排一层；说了"最"就提一级')),
+              h('span', { className: 'w' }, '只看紧急/重要（4/5 级）；全部明细在下面待办卡')),
             h('div', { className: 'ke-card ke-kv ke-scroll', style: { maxHeight: 92 } },
-              (b.todos && b.todos.priorityGroups && b.todos.priorityGroups.length)
-                ? b.todos.priorityGroups.map((group) => h('div', { key: group.level, style: { marginTop: 4 } },
-                    h('div', { style: { display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3 } },
-                      levelTag(group.level, group.label),
-                      h('span', { className: 'ke-mini' }, group.quadrant + ' · ' + group.items.length + ' 条')),
-                    group.items.slice(0, 4).map((item) => h('div', { key: item.id, style: { paddingLeft: 4 } },
-                      '· ' + item.id + ' ' + item.title + (item.due ? '（' + item.due + '）' : '')))))
-                : h('span', { className: 'ke-mini' }, '还没有确认过的待办；确认后才会排优先级')),
+              (function renderPriority() {
+                const rows = (b.attention && b.attention.items ? b.attention.items : []).filter((item) => item.level >= 4)
+                if (!rows.length) return h('span', { className: 'ke-mini' }, '暂无紧急/重要事项（4/5 级）')
+                return rows.slice(0, 6).map((item) => h('div', { key: item.kind + '-' + item.id, style: { display: 'flex', alignItems: 'center', gap: 6, padding: '3px 0', minWidth: 0 } },
+                  levelTag(item.level, item.label),
+                  h('span', { className: 'ke-mini', style: { flex: '0 0 46px' } }, item.sourceLabel),
+                  h('span', { className: 'nm', style: { flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, item.title),
+                  h('span', { className: 'ke-mini' }, item.due || '')))
+              })(),
             ),
             ),
-            h('div', { className: 'ke-panel' }, h('div', { className: 'ke-blk', style: { marginTop: 0 } }, h('span', { className: 'h' }, '待办'),
-              h('span', { className: 'w' }, '已确认 ' + ((b.todos && b.todos.confirmed.length) || 0) + ' · 待确认 ' + ((b.todos && b.todos.pendingCount) || 0))),
+            ),
+            h('div', { className: 'ke-panel ke-todo' }, h('div', { className: 'ke-blk', style: { marginTop: 0 } }, h('span', { className: 'h' }, '待办'),
+              h('span', { className: 'w' }, '全部事项 ' + ((b.attention && b.attention.count) || 0) + ' · 待确认 ' + ((b.todos && b.todos.pendingCount) || 0))),
+            h('div', { className: 'ke-card ke-kv ke-scroll', style: { maxHeight: 150, marginBottom: 6 } },
+              (b.attention && b.attention.items && b.attention.items.length)
+                ? b.attention.items.map((item) => h('div', { key: 'todo-' + item.kind + '-' + item.id, style: { display: 'flex', alignItems: 'center', gap: 6, padding: '3px 0', minWidth: 0 } },
+                    levelTag(item.level, item.label),
+                    h('span', { className: 'ke-mini', style: { flex: '0 0 46px' } }, item.sourceLabel),
+                    h('span', { className: 'nm', style: { flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, item.title),
+                    h('span', { className: 'ke-mini', style: { flex: '0 0 70px', textAlign: 'right' } }, item.durationLabel || '')))
+                : h('span', { className: 'ke-mini' }, '没有待办或进行中的 CEO 任务')),
             // 2026-10-26 修 B-01：候选（待确认）也列出来，每条给「确认/划掉」，确认前可填日期
             (function renderPending() {
               const rows = (b.todos && b.todos.pending) || []
@@ -817,7 +867,7 @@ window.__ModuleLoader__.load({
                 rows.map((t) => h('div', { key: t.id, style: { display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4, flexWrap: 'wrap' } },
                   editId === t.id
                     ? h('input', { type: 'text', value: editText, onChange: (ev) => setEditText(ev.target.value), style: { flex: '1 1 160px', fontSize: 13, padding: '2px 6px' } })
-                    : h('span', { style: { flex: '1 1 120px' } }, t.id + ' ' + t.title),
+                    : h('span', { style: { flex: '1 1 120px' } }, t.title),
                   h('input', {
                     type: 'date',
                     value: dueDraft[t.id] || '',
@@ -862,8 +912,7 @@ window.__ModuleLoader__.load({
                 h('input', { type: 'checkbox', checked: important, onChange: (e) => setImportant(e.target.checked) }),
                 '重要'),
               h('button', { onClick: addTodo, disabled: busy || !draft.trim(), title: '把这句记成待办' }, '记下'),
-              h('button', { onClick: () => handoffTo('secretary', draft.trim() || (chatLog.filter((x) => x.role === 'me').slice(-1)[0] || {}).text || '把这件事交给CEO'), disabled: busy, title: '把这句/这件事硬转给 CEO' }, '问 CEO'),
-              h('button', { onClick: openSession, disabled: busy, title: '开一个新会话（点击=你同意；一小时最多 4 个）' }, '开新会话'))),
+              h('button', { onClick: () => handoffTo('secretary', draft.trim() || (chatLog.filter((x) => x.role === 'me').slice(-1)[0] || {}).text || '把这件事交给CEO'), disabled: busy, title: '把这句/这件事硬转给 CEO' }, '问 CEO'))),
 
               ),
 
@@ -890,21 +939,8 @@ window.__ModuleLoader__.load({
                   onChange: (e) => setCeoDraft(e.target.value),
                   onKeyDown: (e) => { if (e.key === 'Enter') sendCeo() },
                 }),
-                h('button', { onClick: sendCeo, disabled: ceoBusy || !ceoDraft.trim() }, ceoBusy ? '想…' : '发送')),
-              (() => {
-                const ceoTasks = (b.tasks || []).filter((task) => task.assignee === 'ceo' && !['完成', '已归档', '已记忆'].includes(task.status))
-                return h('div', { className: 'ke-blk ke-task' },
-                  h('span', { className: 'h' }, 'CEO 任务'),
-                  h('span', { className: 'w' }, ceoTasks.length ? '待办 ' + ceoTasks.length + ' 条' : '暂无'),
-                  h('div', { className: 'ke-card ke-kv', style: { maxHeight: 96, overflowY: 'auto' } },
-                    ceoTasks.length
-                      ? ceoTasks.slice(-6).map((task) => h('div', { key: task.id, style: { display: 'flex', alignItems: 'center', gap: 6, padding: '3px 0', borderBottom: '1px solid #f2f3f5' } },
-                          h('span', { className: 'ke-mini', style: { width: 44, flex: '0 0 44px' } }, task.id),
-                          h('span', { title: task.title, style: { flex: 1, fontSize: 12, color: '#1d2129', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, task.title.length > 18 ? task.title.slice(0, 18) + '…' : task.title),
-                          h('span', { className: 'ke-mini', style: { color: task.status === '进行中' ? '#0e7a4b' : task.status === '完成' ? '#2b55c8' : '#86909c' } }, task.status),
-                          taskButtons(task.id)))
-                      : h('div', { className: 'ke-mini' }, '暂无挂给 CEO 的任务（秘书说“让CEO做…”或点问CEO/转给CEO 才会出现）')))
-              })(),
+                h('button', { onClick: sendCeo, disabled: ceoBusy || !ceoDraft.trim() }, ceoBusy ? '想…' : '发送'),
+                h('button', { className: 'ke-btn', onClick: openTaskSession, disabled: ceoBusy, title: '用输入框里的任务开一个 CEO 执行会话（点击=你同意；一小时最多 4 个）' }, '开新会话（任务）')),
             ),
 
             h('div', { className: 'ke-role-frame' },
@@ -937,11 +973,6 @@ window.__ModuleLoader__.load({
                 h('button', { className: 'ke-btn', onClick: handoffToCeo, title: '把这句连同史实转给 CEO' }, '转给 CEO'))),
             ),
 
-            (b.schedule && b.schedule.tonight)
-              ? h('div', null,
-                  h('div', { className: 'ke-blk' }, h('span', { className: 'h' }, '今晚排期'), h('span', { className: 'w' }, '建议稿，动不动你说了算')),
-                  h('div', { className: 'ke-card ke-kv' }, '约 ' + ((b.schedule.tonight.minutes || 0)) + ' 分钟'))
-              : null,
 
 
 
@@ -1174,12 +1205,15 @@ window.__ModuleLoader__.load({
                 s.level ? levelTag(s.level, s.levelLabel) : null,
                 h('span', { className: 't' }, localHm(s.at, true) + ' 更新'),
               ),
-              (s.top && s.top.length)
-                ? s.top.map((it, i) => h('div', { className: 'row', key: i },
-                    levelTag(it.level, it.levelLabel),
-                    h('span', { className: 'nm' }, it.title || ''),
-                    h('span', { className: 'due' }, it.due || '')))
-                : h('div', { className: 'row' }, h('span', { className: 'nm ke-mini' }, s.note || '今天没有要提醒你的')),
+              (s.attention && s.attention.items && s.attention.items.length)
+                ? s.attention.items.slice(0, 3).map((item, i) => h('div', { className: 'row', key: 'att-' + i },
+                    levelTag(item.level, item.label),
+                    h('span', { className: 'nm' }, item.sourceLabel + ' · ' + (item.title || '')),
+                    h('span', { className: 'due' }, item.due || item.status || '')))
+                : null,
+              (!s.attention || !s.attention.items || !s.attention.items.length)
+                ? h('div', { className: 'row' }, h('span', { className: 'nm ke-mini' }, s.note || '今天没有要提醒你的'))
+                : null,
               error ? h('div', { className: 'row' }, h('span', { className: 'nm ke-err' }, '读不到：' + error)) : null,
               h('div', { className: 'ke-add', style: { margin: '6px 0 0' } },
                 h('input', {

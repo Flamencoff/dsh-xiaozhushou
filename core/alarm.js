@@ -12,6 +12,7 @@
  */
 
 import { isClock, minutesOf } from './config.js'
+import { selectReminders } from './reminder-policy.js'
 
 const FILE = '提醒状态.json'
 
@@ -23,8 +24,13 @@ export function createAlarm({ store, config, ledger, startedAt }) {
     return store.write(FILE, state)
   }
 
-  /** 已确认且已到期（含今天）的待办 */
-  function dueReminders(now) {
+  /** 已确认且已到期（含今天）的待办；policy=confirmed 时按确认制分时规则 */
+  function dueReminders(now, slot = '') {
+    if (String(alarmConfig.policy || 'confirmed') === 'confirmed') {
+      const times = Array.isArray(alarmConfig.fixedTimes) && alarmConfig.fixedTimes.length ? alarmConfig.fixedTimes : ['09:00', '13:00', '18:00']
+      const selected = selectReminders({ todos: safeStats(ledger).confirmed, slot, now, seen: state.lastNotified, morningSlot: times[0], eveningSlot: times[times.length - 1] })
+      return selected.items.map((item) => ({ ...item, urgency: 1, importance: 1 }))
+    }
     const today = dateOf(now)
     const stats = safeStats(ledger)
     // 双保险：即使上游把候选混进来，这里也只认「已确认」（R-ALM-01 是硬规则）
@@ -83,7 +89,7 @@ export function createAlarm({ store, config, ledger, startedAt }) {
       result.fired.push(slot)
 
       // 3) 组装本次该提醒的条目（去重 + 静默）
-      for (const reminder of dueReminders(now)) {
+      for (const reminder of dueReminders(now, slot)) {
         const lastAt = state.lastNotified[reminder.key]
         const dedupeMs = (Number(alarmConfig.dedupeMinutes) || 0) * 60_000
         if (lastAt && now.getTime() - new Date(lastAt).getTime() < dedupeMs) {

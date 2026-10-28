@@ -25,7 +25,7 @@ git switch -c feat/<要点>
 
 # …改代码 + 改测试 + 改文档（同一分支内完成）…
 
-node test/harness.mjs             # 185 项必须全绿
+node test/harness.mjs             # 204 项必须全绿
 node scripts/check-release.mjs    # 发布自检
 node scripts/check-imports.mjs    # 依赖体检（解耦兜底）
 git add -A
@@ -61,7 +61,7 @@ git tag -a v<版本> -m "<一句话>"   # 只有「发布批次」才打 tag，�
 
 ## 五、合并前闸门（缺一不可）
 
-1. `node test/harness.mjs` → **185 passed, 0 failed**（数字随版本增长，以当版为准）；
+1. `node test/harness.mjs` → **204 passed, 0 failed**（数字随版本增长，以当版为准）；
 2. `node scripts/check-release.mjs` → 版本一致、包体合规、无个人痕迹 / 密钥 / 运行数据；
 3. `node scripts/check-imports.mjs` → 无循环依赖、无外部依赖、依赖方向正确；
 4. 改了 `client.js` 或界面 → **重启 DSH 真机看一遍**再合；

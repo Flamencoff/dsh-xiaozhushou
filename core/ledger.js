@@ -57,6 +57,8 @@ export function createLedger(store) {
       mostUrgent: Boolean(input.mostUrgent),
       mostImportant: Boolean(input.mostImportant),
       due: normalizeDate(input.due),
+      estimate_slots: Number.isFinite(Number(input.estimate_slots)) ? Math.max(1, Math.min(20, Number(input.estimate_slots))) : null,
+      due_source: input.due_source === 'estimated' ? 'estimated' : 'author',
       source: input.source || null,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -94,6 +96,8 @@ export function createLedger(store) {
     }
     // FIX-04：记下用户说过的时刻（只作记录；定点提醒仍是 08:05/12:05/18:05）
     if (input.dueTime !== undefined && input.dueTime !== null && String(input.dueTime).trim()) patch.dueTime = String(input.dueTime).trim()
+    if (input.estimate_slots !== undefined) patch.estimate_slots = Math.max(1, Math.min(20, Number(input.estimate_slots) || 1))
+    if (input.due_source === 'estimated' || input.due_source === 'author') patch.due_source = input.due_source
     if (input.urgency !== undefined) patch.urgency = clampLevel(input.urgency)
     if (input.importance !== undefined) patch.importance = clampLevel(input.importance)
     if (input.mostUrgent !== undefined) patch.mostUrgent = Boolean(input.mostUrgent)

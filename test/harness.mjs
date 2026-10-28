@@ -127,6 +127,11 @@ const { createStore } = await import('../core/store.js')
 const { createLedger } = await import('../core/ledger.js')
 const { buildBoard, buildState } = await import('../core/board.js')
 const { createInbox } = await import('../core/inbox.js')
+const { estimateSlots, capacityFor, estimateDue, buildSchedule } = await import('../core/estimate.js')
+const { selectReminders, reminderKind, localDate: reminderLocalDate } = await import('../core/reminder-policy.js')
+const { candidatesFromEvents } = await import('../core/session-scan.js')
+const { buildSessionCards } = await import('../core/session-cards.js')
+const { buildAttention } = await import('../core/attention.js')
 const { createAlarm, inQuietHours } = await import('../core/alarm.js')
 const { resolveConfig, DEFAULT_CONFIG } = await import('../core/config.js')
 const { selectEvents, summarize, estimateTokens, TIERS } = await import('../core/read.js')
@@ -140,6 +145,8 @@ const { createHandover } = await import('../core/handover.js')
 const { writeRepairStation } = await import('../core/repair.js')
 const { computePriority, rankByPriority, groupByPriority, overallSignal, PRIORITY_LEVELS } = await import('../core/priority.js')
 const { createToolset, TOOL_NAMES } = await import('../core/tools.js')
+const { createTaskFlow } = await import('../core/task-flow.js')
+const { buildHistorianFeed } = await import('../core/historian-feed.js')
 const { evaluate, checkSubagent, budgetAfterRetry, DEFAULT_LIMITS } = await import('../core/limits.js')
 const { presetDefinitions, ROLE_PRESETS } = await import('../roles/presets.js')
 const rolesPlugin = await import('../roles/index.js')
@@ -161,13 +168,13 @@ test('宿主半导出 apply 与 inject', () => {
   assert.deepEqual(Array.from(mod.inject), ['webServer'])
 })
 
-test('apply() 注册 24 条路由（含 handoff / task status），启动后即可取数', async () => {
+test('apply() 注册 26 条路由（含 handoff / task status / 开任务会话），启动后即可取数', async () => {
   const dir = freshDir('routes')
   const { ctx, routes, disposers } = makeCtx(dir)
   mod.apply(ctx, { startupRefreshMs: 0 })
   await new Promise((resolve) => setTimeout(resolve, 30))
 
-  assert.equal(routes.size, 24)
+  assert.equal(routes.size, 26)
   for (const [path, route] of routes) {
     assert.equal(route.kind, 'exact', path + ' 应为 exact')
   }
@@ -195,7 +202,7 @@ test('D-16 守卫：发布文档都写清"24 条路由 = 本机回环接口"', (
     const text = readFileSync(join(pkgDir, rel), 'utf8')
     assert.ok(/127\.0\.0\.1/.test(text), rel + ' 要写清监听在 127.0.0.1')
     assert.ok(/回环/.test(text), rel + ' 要写明是回环接口')
-    assert.ok(/24 条/.test(text), rel + ' 要点明 24 条路由')
+    assert.ok(/26 条/.test(text), rel + ' 要点明 26 条路由')
   }
   const index = readFileSync(join(pkgDir, 'index.js'), 'utf8')
   assert.ok(!/\.listen\(/.test(index), '插件不许自己开监听端口（必须挂在宿主 webServer 上）')
@@ -452,13 +459,112 @@ test('收件箱：只追加不覆盖，关闭是单向的，坏记录跳过', ()
 function alarmFixture({ now, startedAt, alarm = {}, todos = [] }) {
   const dir = freshDir('alarm-' + Math.random().toString(36).slice(2, 8))
   const store = createStore(dir)
-  const { config } = resolveConfig({ alarm: { bootGateMinutes: 0, graceMinutes: 30, ...alarm } })
+  const { config } = resolveConfig({ alarm: { policy: 'classic', bootGateMinutes: 0, graceMinutes: 30, ...alarm } })
   const ledger = { stats: () => ({ confirmed: todos, pendingCount: 0, doneCount: 0, droppedCount: 0, skipped: 0 }) }
   const clock = createAlarm({ store, config, ledger, startedAt })
   return { clock, config, now }
 }
 
 const dueTodo = { id: 'T-001', title: '买牛奶', status: '已确认', due: '2026-10-26', urgency: 3, importance: 3 }
+
+test('浮窗灯：CEO 任务最急时，鲸鱼娘不能还是蓝点', () => {
+  const state = buildState({
+    ledger: { stats: () => ({ confirmed: [{ id: 'T-1', title: '常规待办', status: '已确认', priority: { level: 1, label: '常规' } }], pendingCount: 0, doneCount: 0, droppedCount: 0, skipped: 0 }) },
+    openTasks: [{ id: 'K-1', title: '最急任务', status: '进行中', priority: { level: 5, label: '最急', dots: 1, color: 'red', blink: true } }],
+    snapshot: { sessions: [] },
+  })
+  assert.equal(state.level, 5)
+  assert.equal(state.dot, 'red')
+  assert.equal(state.blink, true)
+})
+
+test('统一事项：待办和 CEO 任务共用一套优先级', () => {
+  const todo = { id: 'T-1', title: '常规待办', status: '已确认', priority: { level: 1, label: '常规' } }
+  const task = { id: 'K-1', title: '最急任务', status: '进行中', priority: { level: 5, label: '最急' } }
+  const merged = buildAttention({ todos: [todo], tasks: [task] })
+  assert.equal(merged.count, 2)
+  assert.equal(merged.items[0].id, 'K-1')
+  assert.equal(merged.items[0].kind, 'task')
+  assert.equal(merged.items[0].sourceLabel, 'CEO 任务')
+  assert.equal(merged.items[1].kind, 'todo')
+  assert.equal(merged.groups[0].level, 5)
+})
+
+test('会话卡：live 是正在干活，有截止的会话按到期排健康态', () => {
+  const now = new Date('2026-10-28T10:00:00')
+  const snapshot = { sessions: [
+    { id: 's-live', title: '正在跑', live: true, createdAt: now.getTime() - 86400000 },
+    { id: 's-due', title: '有截止', live: false, createdAt: now.getTime() - 6 * 86400000 },
+  ] }
+  const ledger = { stats: () => ({ confirmed: [{ id: 'T-1', title: '交材料', due: '2026-10-27', source: { sessionId: 's-due' } }] }) }
+  const cards = buildSessionCards({ snapshot, ledger, inbox: null, now })
+  assert.equal(cards[0].id, 's-live')
+  assert.equal(cards[0].health, 'working')
+  assert.equal(cards[1].id, 's-due')
+  assert.equal(cards[1].health, 'overdue')
+})
+
+test('工量估算：档位、容量、没截止时按容量估日', () => {
+  assert.equal(estimateSlots('写三季度监督报告'), 8)
+  assert.equal(estimateSlots('开个会沟通一下'), 2)
+  assert.equal(estimateSlots('开发插件并部署'), 16)
+  assert.equal(capacityFor('2026-11-01').slots, 0, '周日不排')
+  assert.equal(capacityFor('2026-10-31').slots, 3, '周六 3 槽')
+  assert.equal(capacityFor('2026-10-30').slots, 3, '工作日 3 槽')
+  const author = estimateDue({ now: new Date('2026-10-28T10:00:00'), slots: 2, due: '2026-10-30' })
+  assert.deepEqual([author.due, author.dueSource], ['2026-10-30', 'author'])
+  const estimated = estimateDue({ now: new Date('2026-10-30T10:00:00'), slots: 4, due: '' })
+  assert.equal(estimated.dueSource, 'estimated')
+  assert.ok(estimated.due >= '2026-10-31')
+  const schedule = buildSchedule({ todos: [{ id: 'T-1', title: '开会沟通', due: '2026-10-30', priority: { level: 4 } }], now: new Date('2026-10-28T10:00:00') })
+  const split = buildSchedule({ todos: [{ id: 'T-2', title: '写季度报告', estimate_slots: 8, priority: { level: 3 } }], now: new Date('2026-10-28T10:00:00') })
+  assert.equal(split.usedSlots, 8, '4 小时活应拆到多天，不能直接判装不下')
+  assert.equal(split.unscheduled.length, 0, JSON.stringify(split.unscheduled))
+  assert.equal(schedule.usedSlots >= 1, true)
+  assert.equal(schedule.days.length, 7)
+})
+
+test('提醒频次：确认制规则只在该响的时点响', () => {
+  const now = new Date('2026-10-28T09:00:00')
+  const overdue = { id: 'T-1', title: '过期事', status: '已确认', due: '2026-10-27' }
+  const today = { id: 'T-2', title: '今天事', status: '已确认', due: '2026-10-28' }
+  const tomorrow = { id: 'T-3', title: '明天事', status: '已确认', due: '2026-10-29' }
+  assert.equal(reminderKind(overdue, '08:05', now), 'overdue')
+  assert.equal(reminderKind(overdue, '12:05', now), null, '过期不在午间重复')
+  assert.equal(reminderKind(today, '08:05', now), 'today')
+  assert.equal(reminderKind(today, '13:00', now), null, '今天只在早/晚两个点')
+  assert.equal(reminderKind(tomorrow, '18:05', now), 'tomorrow')
+  const selected = selectReminders({ todos: [today], slot: '08:05', now })
+  assert.equal(selected.shouldSend, true)
+  assert.equal(selected.items[0].kind, 'today')
+})
+
+test('扫会话出候选：只抓像交代的句子，标低置信，不自动确认', () => {
+  const events = [
+    { type: 'user/message', data: { content: [{ type: 'text', text: '记一下，周五前把三季度监督报告交上来' }] } },
+    { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '好的' }] } } },
+    { type: 'user/message', data: { content: [{ type: 'text', text: '这个报告怎么写才好？' }] } },
+  ]
+  const found = candidatesFromEvents(events, { sessionId: 's-1', now: new Date('2026-10-28T10:00:00') })
+  assert.equal(found.length, 1, JSON.stringify(found))
+  assert.ok(found[0].title.includes('三季度监督报告'))
+  assert.equal(found[0].confidence, 'medium')
+  assert.equal(found[0].source, 'session-scan')
+  assert.ok(found[0].estimate_slots >= 1)
+})
+
+test('确认制提醒策略：今天到期只在早晚两点响，午间不重复', () => {
+  const at = (h, m) => new Date(2026, 9, 26, h, m, 0)
+  const { clock } = alarmFixture({ now: at(9, 6), todos: [dueTodo], alarm: { policy: 'confirmed' } })
+  const morning = clock.tick(at(9, 6))
+  assert.deepEqual(Array.from(morning.fired), ['09:00'])
+  assert.equal(morning.reminders.length, 1, '早上响一次')
+  const noon = clock.tick(at(13, 6))
+  assert.deepEqual(Array.from(noon.fired), ['13:00'])
+  assert.equal(noon.reminders.length, 0, '午间不重复今天到期')
+  const evening = clock.tick(at(18, 6))
+  assert.equal(evening.reminders.length, 1, '晚上再响一次')
+})
 
 test('三定点：到点才响、只响一次、过期不补', () => {
   const at = (h, m) => new Date(2026, 9, 26, h, m, 0)
@@ -924,6 +1030,53 @@ function memoryFixture() {
   return { dir, store, memory: createMemory({ store, dataDir: dir }) }
 }
 
+test('史官节律：21:45 每日判定、周五复盘判定、每天只跑一次', async () => {
+  const { dailyDue, weeklyDue, createHistorianSchedule } = await import('../core/historian-schedule.js')
+  assert.equal(dailyDue(new Date('2026-10-27T21:44:00'), '21:45', ''), false, '没到点不跑')
+  assert.equal(dailyDue(new Date('2026-10-27T21:45:00'), '21:45', ''), true, '到点跑')
+  assert.equal(dailyDue(new Date('2026-10-27T21:46:00'), '21:45', '2026-10-27'), false, '当天已跑不重复')
+  assert.equal(dailyDue(new Date('2026-10-28T09:00:00'), '21:45', '2026-10-27'), true, '昨天漏跑，今天启动补一次')
+  assert.equal(dailyDue(new Date('2026-10-28T09:00:00'), '21:45', ''), false, '没跑过但没到点，先等当天 21:45')
+  assert.equal(weeklyDue(new Date('2026-10-30T21:45:00'), { weekday: 5, at: '21:45', lastWeek: '' }), true, '周五到点跑')
+  assert.equal(weeklyDue(new Date('2026-10-29T21:45:00'), { weekday: 5, at: '21:45', lastWeek: '' }), false, '周四不提前跑')
+  assert.equal(weeklyDue(new Date('2026-10-31T21:00:00'), { weekday: 5, at: '21:45', lastWeek: '' }), true, '周六可补跑周五')
+
+  const dir = freshDir('hist-schedule')
+  let runs = 0
+  const schedule = createHistorianSchedule({
+    dataDir: join(dir, 'data'),
+    historian: { record: async () => { runs += 1; return { ok: true, message: '记了 2 条' } } },
+    historianChat: null,
+    config: { enabled: { historian: true }, historian: { schedule: { enabled: true, dailyAt: '21:45' } } },
+    audit: { write() {} },
+    now: () => new Date('2026-10-27T21:46:00'),
+  })
+  const first = await schedule.runDaily()
+  assert.equal(first.ok, true)
+  assert.equal(runs, 1)
+  const second = await schedule.runDaily()
+  assert.equal(second.skipped, true, '同一晚只跑一次')
+  assert.equal(runs, 1)
+  assert.ok(schedule.state().lastDailyDate === '2026-10-27')
+})
+
+test('任务产物链：交接卡 → 结果 → 归档 → 史官投喂都落盘', () => {
+  const dir = freshDir('task-flow')
+  const flow = createTaskFlow({ dataDir: dir })
+  const task = { id: 'K-777', title: '十五五规划提纲', by: 'secretary', assignee: 'ceo', status: '进行中', facts: '用户说：整理成三页' }
+  const card = flow.writeHandoff({ task, sessionId: 's-1' })
+  assert.equal(card.ok, true, JSON.stringify(card))
+  assert.ok(existsSync(card.path) && readFileSync(card.path, 'utf8').includes('交接卡'))
+  const result = flow.writeResult({ task: { ...task, handoffCard: card.path, sessionId: 's-1' }, result: '已产出三页提纲' })
+  assert.equal(result.ok, true, JSON.stringify(result))
+  assert.ok(readFileSync(result.path, 'utf8').includes('已产出三页提纲'))
+  const archive = flow.writeArchive({ task: { ...task, status: '完成', handoffCard: card.path, resultPath: result.path, resultSummary: '已产出三页提纲' } })
+  assert.equal(archive.ok, true, JSON.stringify(archive))
+  assert.ok(readFileSync(archive.path, 'utf8').includes('执行结果'))
+  const feed = buildHistorianFeed({ ...task, status: '完成', resultSummary: '已产出三页提纲', resultPath: result.path })
+  assert.ok(feed.includes('处理结果：已产出三页提纲'))
+})
+
 test('D-19 记忆：ensure 生成四文件，已有内容不被覆盖', () => {
   const { dir, memory } = memoryFixture()
   const ensured = memory.ensure()
@@ -949,6 +1102,8 @@ test('D-19 记忆：首次周更写入四文件，7 天内不重复，过 7 天�
   assert.ok(recent.includes('整理三季度材料'), '近期交代要包含任务板事项')
   assert.ok(readFileSync(join(dir, '记忆', '长期规划.md'), 'utf8').includes('交周报'), '长期规划要列未完成的已确认待办')
   assert.ok(readFileSync(join(dir, '记忆', '用户画像.md'), 'utf8').includes('待办台账共 2 条'), '用户画像要写总量')
+  const profile = readFileSync(join(dir, '记忆', '用户画像.md'), 'utf8')
+  assert.ok(profile.includes('活跃节奏') && profile.includes('常出现的主题') && profile.includes('你反复提到的偏好'), '画像要有节奏/主题/偏好，不只是台账')
   assert.ok(readFileSync(join(dir, '记忆', '情绪与处境.md'), 'utf8').includes('近 7 天'), '情绪与处境只做计数')
   assert.equal(memory.status().lastUpdatedAt, now.toISOString())
 
@@ -1126,8 +1281,7 @@ test('D-20 执行器：spawner 参数正确（CEO preset / 固定标题 / 任务
   assert.equal(result.executed, true)
   assert.equal(result.sessionId, 's-exec')
   assert.equal(calls.length, 1)
-  assert.equal(calls[0].agentPreset, EXECUTE_PRESET)
-  assert.equal(calls[0].agentPreset, 'steward-ceo')
+  assert.equal(calls[0].agentPreset, undefined, '任务会话应是普通会话，不套角色 preset')
   assert.equal(calls[0].title, EXECUTE_TITLE)
   assert.equal(calls[0].confirmedByAuthor, true)
   assert.ok(calls[0].prompt.includes('整理材料'), '任务要写进第一句')
@@ -1167,7 +1321,7 @@ test('D-20 路由：/ceo/chat 命中"开新会话执行"时真建会话并回会
   assert.equal(res.json.executed, true)
   assert.equal(res.json.sessionId, 's-ceo-new')
   assert.equal(res.json.sessionTitle, EXECUTE_TITLE)
-  assert.equal(calls.create[0].agentPreset, 'steward-ceo')
+  assert.equal(calls.create[0].agentPreset, undefined, '任务会话应是普通会话')
   assert.equal(calls.rename[0].title, EXECUTE_TITLE)
   assert.ok(calls.prompt[0].content[0].text.includes('整理三季度材料'), '任务要写进第一句')
 })
@@ -1203,7 +1357,28 @@ test('D-08/D-20 按钮开会话：/session/open 把 preset 兼容成 agentPreset
   assert.equal(calls.create[1].agentPreset, 'steward-ceo', 'agentPreset 写法也要透传')
 
   const client = readFileSync(join(pkgDir, 'client.js'), 'utf8')
-  assert.ok(client.includes("agentPreset: 'steward-secretary'"), '看板「开新会话」按钮要直接传 agentPreset')
+  assert.ok(client.includes('openTaskSession') && client.includes('/ceo/open-task'), 'CEO 按钮要走「开任务会话」接口')
+  assert.ok(!client.includes("agentPreset: 'steward-secretary'"), '秘书区不再开新会话')
+})
+
+test('D-20 路由：/ceo/open-task 按钮真建 CEO 任务会话', async () => {
+  const dir = freshDir('ceo-open-task')
+  const calls = { create: [], rename: [], prompt: [] }
+  const controller = {
+    async create(req) { calls.create.push(req); return { sessionId: 's-task' } },
+    async rename(req) { calls.rename.push(req); return { ok: true } },
+    async prompt(req) { calls.prompt.push(req); return { accepted: true } },
+  }
+  const query = { listSessions: async () => [], readTitleSnapshots: async () => [], readSession: async () => ({ events: [] }) }
+  const { ctx, routes } = makeCtx(dir, { services: { sessionController: controller, sessionQuery: query } })
+  mod.apply(ctx, { dataDir: dir, startupRefreshMs: 0 })
+  const res = await call(routes, '/api/dsh-xiaozhushou/ceo/open-task', { task: '整理三季度材料' })
+  assert.equal(res.status, 200)
+  assert.equal(res.json.ok, true)
+  assert.equal(res.json.executed, true)
+  assert.equal(res.json.sessionId, 's-task')
+  assert.equal(calls.create[0].agentPreset, undefined, '任务会话应是普通会话')
+  assert.ok(calls.prompt[0].content[0].text.includes('整理三季度材料'), '任务要写进第一句')
 })
 
 test('D-20 任务硬动作：/task/status 能把任务转交给秘书', async () => {
@@ -1582,7 +1757,7 @@ test('client.js 要真的画出多红点与闪烁（防回归）', () => {
   const src = readFileSync(join(pkgDir, 'client.js'), 'utf8')
   assert.ok(src.includes('renderDots'), '必须有画灯的函数')
   assert.ok(src.includes('ke-blink'), '必须有闪烁样式')
-  assert.ok(src.includes('priorityGroups'), '看板要渲染优先级层')
+  assert.ok(src.includes('attention'), '看板要渲染统一优先级层')
   assert.ok(/Math\.max\(1, Number\(state\.dots\)/.test(src), '灯数不能小于 1')
 })
 /* ── A1：三个角色工具（默认关闭） ─────────────────────────── */
@@ -1613,6 +1788,160 @@ test('A1 工具：合计只有 3 个，且都符合官方 ToolDefinition 形状'
     assert.equal(blocks[0].type, 'text')
     assert.equal(blocks[0].text, 'hi')
   }
+})
+
+test('A1 秘书 handoff：只给 facts 也能落 CEO 任务板（不再报“任务没写清楚”）', async () => {
+  const dir = freshDir('handoff-facts')
+  const store = createStore(dir)
+  const calls = []
+  const taskOps = {
+    list: () => [],
+    assign: (title, facts) => { calls.push({ title, facts }); return { ok: true, task: { id: 'K-900', title } } },
+    setStatus: () => ({ ok: true }),
+    archive: () => ({ ok: true }),
+    remember: () => ({ ok: true }),
+  }
+  const toolset = createToolset({ ledger: createLedger(store), inbox: createInbox(store), historian: null, handover: createHandover({ dataDir: dir }), config: { enabled: { secretary: true }, tools: { enabled: true } }, tasks: taskOps, log: () => {} })
+  const sec = toolset.find((x) => x.name === 'steward_secretary')
+  const r = await sec.execute({ action: 'handoff_to_ceo', facts: '用户说：帮我找一下十五五规划的历史会话' }, {})
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.equal(calls.length, 1)
+  assert.ok(calls[0].title.length > 0, 'facts 要能兜底成标题')
+  assert.ok(calls[0].facts.includes('十五五规划'))
+})
+
+test('notice：必须把 signal 传给 sessionController.prompt，失败不假成功', async () => {
+  const dir = freshDir('notice-signal')
+  const store = createStore(dir)
+  store.write('CEO/会话状态.json', { version: 1, sessionId: 's-notice' })
+  const calls = []
+  const okChat = createRoleChat({
+    ctx: { get: (name) => (name === 'sessionController' ? { prompt: async (request, signal) => { calls.push({ request, signal }) } } : undefined) },
+    store, log: () => {}, dataDir: dir, role: 'ceo',
+  })
+  const sent = await okChat.notice('通知 CEO')
+  assert.equal(sent.ok, true, JSON.stringify(sent))
+  assert.equal(calls.length, 1)
+  assert.ok(calls[0].signal && typeof calls[0].signal.aborted === 'boolean', 'prompt 第二个参数必须是 AbortSignal')
+  assert.equal(calls[0].request.mode, 'queue')
+
+  const badChat = createRoleChat({
+    ctx: { get: (name) => (name === 'sessionController' ? { prompt: async () => { throw new Error('boom') } } : undefined) },
+    store, log: () => {}, dataDir: dir, role: 'ceo',
+  })
+  const failed = await badChat.notice('失败通知')
+  assert.equal(failed.ok, false, 'prompt 抛错时 notice 不能假成功')
+})
+
+test('画像词频：中文主题能被提取出来', () => {
+  const dir = freshDir('profile-terms')
+  const store = createStore(dir)
+  store.write('任务.json', { version: 1, tasks: [
+    { id: 'K-101', title: '十五五规划材料', status: '完成' },
+    { id: 'K-102', title: '十五五规划汇报', status: '完成' },
+    { id: 'K-103', title: '十五五规划分工', status: '完成' },
+  ] })
+  const memory = createMemory({ store, dataDir: dir })
+  memory.maybeWeeklyUpdate({ force: true, now: new Date('2026-10-27T10:00:00') })
+  const profile = readFileSync(join(dir, '记忆', '用户画像.md'), 'utf8')
+  assert.ok(profile.includes('十五五'), '中文词频不能因正则把汉字删掉')
+})
+
+test('角色历史同步：只取会话明文，不取 reasoning/tool', async () => {
+  const dir = freshDir('role-history')
+  const store = createStore(dir)
+  store.write('CEO/会话状态.json', { version: 1, sessionId: 's-history', title: 'CEO 对话' })
+  const query = { readSession: async () => ({ events: [
+    { type: 'user/message', seq: 1, data: { content: [{ type: 'text', text: '你好' }] } },
+    { type: 'assistant/message', seq: 2, data: { message: { content: [{ type: 'reasoning', text: '思考' }, { type: 'text', text: '在的' }] } } },
+    { type: 'assistant/message', seq: 3, data: { message: { content: [{ type: 'reasoning', text: '只有思考' }] } } },
+  ] }) }
+  const chat = createRoleChat({ ctx: { get: (name) => (name === 'sessionQuery' ? query : undefined) }, store, log: () => {}, dataDir: dir, role: 'ceo' })
+  const result = await chat.history(10)
+  assert.equal(result.ok, true, JSON.stringify(result))
+  assert.deepEqual(Array.from(result.lines, (line) => [line.role, line.text]), [['me', '你好'], ['bot', '在的']])
+})
+
+test('任务优先级：最紧急最重要进任务板时是 5 级', () => {
+  const dir = freshDir('task-priority')
+  const store = createStore(dir)
+  const chat = createRoleChat({ ctx: { get: () => undefined }, store, log: () => {}, dataDir: dir, role: 'secretary' })
+  const made = chat.assignTask({ title: '最紧急最重要：攻坚任务', assignee: 'ceo', by: 'secretary', facts: '本周五、下周一两个节点，省局市局两层' })
+  assert.equal(made.ok, true, JSON.stringify(made))
+  assert.equal(made.task.priority.level, 5, JSON.stringify(made.task.priority))
+})
+
+test('A1 CEO 会话查找/发指令：sessions 找到旧会话，send_session 只发不新建', async () => {
+  const dir = freshDir('ceo-sessions')
+  const store = createStore(dir)
+  const sent = []
+  const sessionOps = {
+    list: async (query) => [{ id: 'session-old-1', title: '写作材料协作', live: false, preset: '' }],
+    prompt: async (id, text) => { sent.push({ id, text }); return { ok: true } },
+  }
+  const toolset = createToolset({ ledger: createLedger(store), inbox: createInbox(store), historian: null, handover: createHandover({ dataDir: dir }), config: { enabled: { ceo: true }, tools: { enabled: true } }, sessions: sessionOps, log: () => {} })
+  const ceo = toolset.find((x) => x.name === 'steward_ceo')
+  const found = await ceo.execute({ action: 'sessions', query: '写作' }, {})
+  assert.equal(found.ok, true, JSON.stringify(found))
+  assert.ok(found.text.includes('session-old-1') && found.text.includes('写作材料协作'))
+  const pushed = await ceo.execute({ action: 'send_session', sessionId: 'session-old-1', text: '改方向：蒸馏材料记忆' }, {})
+  assert.equal(pushed.ok, true, JSON.stringify(pushed))
+  assert.equal(sent.length, 1)
+  assert.equal(sent[0].id, 'session-old-1')
+  assert.ok(sent[0].text.includes('【CEO 指令】') && sent[0].text.includes('蒸馏材料记忆'))
+})
+
+test('A1 角色消息：秘书 handoff 会通知 CEO 会话，message_role 可发消息', async () => {
+  const dir = freshDir('role-message')
+  const store = createStore(dir)
+  const notices = []
+  const made = []
+  const taskOps = {
+    list: () => made,
+    assign: (title) => { const task = { id: 'K-902', title }; made.push(task); return { ok: true, task } },
+    patch: () => ({ ok: true }), setStatus: () => ({ ok: true }), archive: () => ({ ok: true }), remember: () => ({ ok: true }),
+  }
+  const roleChats = { ceo: { notice: (text) => { notices.push(text); return { ok: true } } }, secretary: { notice: () => ({ ok: true }) }, historian: { notice: () => ({ ok: true }) } }
+  const toolset = createToolset({ ledger: createLedger(store), inbox: createInbox(store), historian: null, handover: createHandover({ dataDir: dir }), config: { enabled: { secretary: true, ceo: true }, tools: { enabled: true } }, tasks: taskOps, roleChats, log: () => {} })
+  const sec = toolset.find((x) => x.name === 'steward_secretary')
+  const handoff = await sec.execute({ action: 'handoff_to_ceo', facts: '用户说：查十五五规划' }, {})
+  assert.equal(handoff.ok, true, JSON.stringify(handoff))
+  assert.ok(notices.length === 1 && notices[0].includes('K-902'), 'handoff 后要通知 CEO 会话')
+  const sent = await sec.execute({ action: 'message_role', target: 'ceo', text: '这条是测试消息' }, {})
+  assert.equal(sent.ok, true, JSON.stringify(sent))
+  assert.ok(notices[1].includes('测试消息'))
+})
+
+test('A1 CEO open_task：用 steward_ceo 真开普通任务会话', async () => {
+  const dir = freshDir('ceo-open-task')
+  const store = createStore(dir)
+  const spawned = []
+  const madeTasks = []
+  const taskOps = {
+    list: () => madeTasks,
+    assign: (title) => { const task = { id: 'K-901', title }; madeTasks.push(task); return { ok: true, task } },
+    patch: (id, fields) => { const task = madeTasks.find((x) => x.id === id); Object.assign(task, fields); return { ok: true, task } },
+    setStatus: () => ({ ok: true }),
+    archive: () => ({ ok: true }),
+    remember: () => ({ ok: true }),
+  }
+  const toolset = createToolset({ ledger: createLedger(store), inbox: createInbox(store), historian: null, handover: createHandover({ dataDir: dir }), config: { enabled: { ceo: true }, tools: { enabled: true } }, spawner: { spawn: async (o) => { spawned.push(o); return { ok: true, sessionId: 's-task' } } }, tasks: taskOps, taskFlow: createTaskFlow({ dataDir: dir }), log: () => {} })
+  const ceo = toolset.find((x) => x.name === 'steward_ceo')
+  const r = await ceo.execute({ action: 'open_task', task: '整理十五五规划材料' }, {})
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.equal(spawned[0].agentPreset, undefined, '任务会话应是普通会话')
+  assert.ok(spawned[0].prompt.includes('十五五规划'))
+})
+
+test('A1 史官 list_records：能列出已落盘言行录正文', async () => {
+  const dir = freshDir('hist-list')
+  mkdirSync(join(dir, '言行录', '2026-10'), { recursive: true })
+  writeFileSync(join(dir, '言行录', '2026-10', '2026-10-27.md'), '# 言行录\n\n- 10:00 用户：测试记录一 [来源: s#1]\n- 10:01 AI：测试记录二 [来源: s#2]\n', 'utf8')
+  const toolset = createToolset({ ledger: createLedger(createStore(dir)), inbox: createInbox(createStore(dir)), historian: { historianRoot: dir }, handover: createHandover({ dataDir: dir }), config: { enabled: { historian: true }, tools: { enabled: true } }, log: () => {} })
+  const hist = toolset.find((x) => x.name === 'steward_historian')
+  const r = await hist.execute({ action: 'list_records', date: '2026-10-27', limit: 10 }, {})
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.ok(r.text.includes('测试记录一') && r.text.includes('测试记录二'))
 })
 
 test('A1 工具默认关闭：config.tools.enabled=false 时不注册（成本红线）', () => {
@@ -2938,10 +3267,12 @@ test('布局守卫（0.47.1）：三个聊天框有清晰边框、人发消息�
   assert.ok(src.includes('.ke-chat{border:2px solid #b9c8ef'), '聊天框要有清晰边框')
   assert.ok(src.includes('.ke-msg.me{background:#d6e7ff'), '人发消息用浅蓝底')
   assert.ok(src.includes('.ke-chat-small .ke-chat-log{max-height:210px'), '史官区域要预留更高')
-  assert.ok(src.includes('maxHeight: 96'), 'CEO 任务区只露三行')
   assert.ok(src.includes('minmax(540px,52%)'), '左侧要压缩，给右侧留空间')
   assert.ok(src.includes('.ke-left2-side{order:-1'), '优先级/待办要在秘书上面')
-  assert.ok(src.includes("className: 'ke-blk ke-task'"), 'CEO 任务区要搬进 CEO 大框')
+  assert.ok(src.includes('ke-panel ke-todo'), '待办是独立卡')
+  assert.ok(!src.includes("className: 'ke-blk ke-task'"), 'CEO 任务区已按作者要求移除')
+  assert.ok(src.includes('durationLabel'), '待办卡要显示大概多久能干完')
+  assert.ok(!src.includes("'会话卡'"), '会话卡已按作者要求移除')
   assert.ok(src.includes('.ke-msg-row') && src.includes('.ke-msg-no'), '聊天消息要有序号与气泡行')
   assert.ok(src.includes("'.ke-btn{border:1px solid #e5e6eb;background:#fff;border-radius:6px;padding:1px 8px;font-size:11px"), '三个角色按钮要同一尺寸')
 })

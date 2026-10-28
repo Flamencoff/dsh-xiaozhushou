@@ -34,6 +34,8 @@ export function buildHistorianFeed(task, { now = new Date() } = {}) {
     `- 完成时间：${iso}`,
   ]
   if (facts) lines.push(`- 事实底稿：${facts}`)
+  if (task && task.resultSummary) lines.push(`- 处理结果：${String(task.resultSummary).slice(0, 1200)}`)
+  if (task && task.resultPath) lines.push(`- 结果文件：${task.resultPath}`)
   lines.push(
     '',
     '## 二、可复用做法（候选偏好）',

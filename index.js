@@ -11,6 +11,7 @@
  */
 
 import { readPointer, resolveDataDir, writePointer } from './core/paths.js'
+import { randomUUID } from 'node:crypto'
 import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
@@ -42,12 +43,15 @@ import { writeRepairStation } from './core/repair.js'
 import { resolveConfig } from './core/config.js'
 import { collect } from './core/collect.js'
 import { buildState, buildBoard } from './core/board.js'
+import { createTaskFlow } from './core/task-flow.js'
+import { candidatesFromEvents } from './core/session-scan.js'
+import { createHistorianSchedule } from './core/historian-schedule.js'
 
 /** 依赖的宿主服务；缺失时插件不激活。 */
 export const inject = ['webServer']
 
 // 版本号单一来源（守卫测试会校验它与 package.json 一致）
-const VERSION = '0.47.3'
+const VERSION = '0.47.4'
 
 function readBoardTasks(storeRef) {
   try {
@@ -94,6 +98,7 @@ export function apply(ctx, configIn = {}) {
   const spawner = createSpawner(ctx)
   // D-20 ②："开新会话执行 …" → 真建 steward-ceo 会话（复用 spawner 的 create→rename→prompt）
   const ceoExecutor = createCeoExecutor({ spawner })
+  const taskFlow = createTaskFlow({ dataDir })
   const brain = createBrain({ ctx, config, log })
   const notifier = createNotifier({ dataDir })
   const finder = createFinder({ config, dataDir, log })
@@ -102,6 +107,7 @@ export function apply(ctx, configIn = {}) {
   const secretaryChat = createRoleChat({ ctx, store, log, dataDir, role: 'secretary', ledger, memory })
   const ceoRoleChat = createRoleChat({ ctx, store, log, dataDir, role: 'ceo', ledger, memory })
   const historianChat = createRoleChat({ ctx, store, log, dataDir, role: 'historian', ledger, memory })
+  const historianSchedule = createHistorianSchedule({ dataDir, historian, historianChat, config, audit, log })
 
   /** 一键建好三个角色会话并绑定（接口与启动自动初始化共用；已存在则复用） */
   async function bootstrapRoles() {
@@ -161,6 +167,21 @@ export function apply(ctx, configIn = {}) {
     if (name) persistentDegraded.add(name)
   }
 
+  /** 看板上的“史官今天记了多少”：直接读当天言行录，重启后也不会显示“还没跑过” */
+  function historianToday() {
+    try {
+      const now = new Date()
+      const y = now.getFullYear()
+      const m = String(now.getMonth() + 1).padStart(2, '0')
+      const d = String(now.getDate()).padStart(2, '0')
+      const file = join(historian.historianRoot, '言行录', y + '-' + m, y + '-' + m + '-' + d + '.md')
+      const lines = readFileSync(file, 'utf8').split(/\r?\n/).filter((line) => line.startsWith('- '))
+      return { summary: '今天已记 ' + lines.length + ' 条（' + y + '-' + m + '-' + d + '）', did: [], decided: [], followups: [] }
+    } catch {
+      return { summary: '今天还没跑史官：点「真跑一次（写盘）」才会记录', did: [], decided: [], followups: [] }
+    }
+  }
+
   function recompute() {
     runtime.computedAt = new Date().toISOString()
     runtime.degraded = Array.from(persistentDegraded)
@@ -173,6 +194,7 @@ export function apply(ctx, configIn = {}) {
     } catch {
       runtime.quiet = false
     }
+    runtime.historianToday = historianToday()
   }
 
 
@@ -291,7 +313,15 @@ export function apply(ctx, configIn = {}) {
   if (timerService && typeof timerService.interval === 'function') {
     ctx.effect(() => timerService.interval(() => {
       refresh().catch((error) => log('refresh failed: ' + String(error && error.message ? error.message : error)))
+      historianSchedule.check().then(() => recompute()).catch((error) => log('historian schedule failed: ' + String(error && error.message ? error.message : error)))
     }, 60_000))
+    // 启动后 15 秒补跑错过的节律（关机/没开 DSH 时错过 21:45 的情况）
+    ctx.effect(() => {
+      const timer = setTimeout(() => {
+        historianSchedule.check().then(() => recompute()).catch((error) => log('historian schedule startup failed: ' + String(error && error.message ? error.message : error)))
+      }, 15_000)
+      return () => clearTimeout(timer)
+    })
     runtime.timerRegistered = true
   } else {
     runtime.timerRegistered = false
@@ -307,26 +337,114 @@ export function apply(ctx, configIn = {}) {
         list: () => ceoRoleChat.readTasks(),
         assign: (title, facts) => secretaryChat.assignTask({ title, assignee: 'ceo', by: 'secretary', facts }),
         setStatus: (id, status, options) => ceoRoleChat.setTaskStatus(id, status, options),
+        patch: (id, fields) => ceoRoleChat.patchTask(id, fields),
+        writeHandoff: (task, sessionId) => taskFlow.writeHandoff({ task, sessionId }),
         archive: (id) => {
           const task = ceoRoleChat.readTasks().find((item) => item.id === id)
           if (!task) return { ok: false, message: '没找到 ' + id }
-          if (task.status !== '完成') return { ok: false, message: '任务还没完成，先完成再归档' }
-          return ceoRoleChat.setTaskStatus(id, '已归档', { assignee: 'secretary' })
+          if (!['完成', '已记忆'].includes(task.status)) return { ok: false, message: '任务还没完成，先完成再归档' }
+          try {
+            const card = taskFlow.writeArchive({ task })
+            const changed = ceoRoleChat.setTaskStatus(id, '已归档', { assignee: 'secretary' })
+            if (!changed || !changed.ok) return changed
+            const patched = ceoRoleChat.patchTask(id, { archivedPath: card.ok ? card.path : '' })
+            return { ...patched, text: card.ok ? '归档 ' + card.path : '状态已归档，归档文件没写成：' + card.message }
+          } catch (error) {
+            return { ok: false, message: '归档失败：' + String(error && error.message ? error.message : error) }
+          }
         },
         remember: (id) => {
           const task = ceoRoleChat.readTasks().find((item) => item.id === id)
           if (!task) return { ok: false, message: '没找到 ' + id }
-          if (task.status !== '完成') return { ok: false, message: '任务还没完成，先完成再存为记忆' }
+          if (!['完成', '已归档'].includes(task.status)) return { ok: false, message: '任务还没完成，先完成再存为记忆' }
           try {
             const feed = writeHistorianFeed({ dataDir, task })
             const changed = ceoRoleChat.setTaskStatus(id, '已记忆', { assignee: 'historian' })
-            return changed && changed.ok ? { ...changed, text: '记忆卡 ' + feed.file } : changed
+            if (!changed || !changed.ok) return changed
+            const patched = ceoRoleChat.patchTask(id, { memoryPath: feed.file })
+            return { ...patched, text: '记忆卡 ' + feed.file }
           } catch (error) {
             return { ok: false, message: '存为记忆失败：' + String(error && error.message ? error.message : error) }
           }
         },
       }
-      const toolset = createToolset({ ledger, inbox, historian, handover, config, snapshot: () => runtime.snapshot, spawner, brain, notifier, finder, pusher, tasks: taskOps, log })
+      const sessionOps = {
+        list: async (query = '') => {
+          const keyword = String(query || '').trim()
+          const fallback = Array.isArray(runtime.snapshot && runtime.snapshot.sessions) ? runtime.snapshot.sessions : []
+          let rows = fallback
+          const queryService = safeGet(ctx, 'sessionQuery')
+          if (queryService && typeof queryService.listSessions === 'function') {
+            try {
+              const records = await queryService.listSessions()
+              const sliced = (Array.isArray(records) ? records : []).slice(0, 500)
+              const ids = sliced.map((row) => row && row.header && row.header.id).filter(Boolean)
+              const titles = new Map()
+              if (ids.length && typeof queryService.readTitleSnapshots === 'function') {
+                try {
+                  for (const item of (await queryService.readTitleSnapshots(ids)) || []) {
+                    if (item && item.status === 'fulfilled' && item.value && item.value.title) titles.set(item.sessionId, item.value.title.title)
+                  }
+                } catch {}
+              }
+              rows = sliced.map((row) => ({
+                id: String((row && row.header && row.header.id) || ''),
+                title: String(titles.get(row && row.header && row.header.id) || ''),
+                live: Boolean(row && row.live),
+                preset: String((row && row.header && row.header.agentPreset) || ''),
+              }))
+            } catch {}
+          }
+          return rows
+            .filter((row) => row.id)
+            .filter((row) => !keyword || String(row.title || '').includes(keyword) || String(row.id).includes(keyword))
+            .slice(0, 20)
+        },
+        scan: async (limit = 8) => {
+          const queryService = safeGet(ctx, 'sessionQuery')
+          if (!queryService || typeof queryService.listSessions !== 'function' || typeof queryService.readSession !== 'function') return { ok: false, message: '这个环境读不到会话' }
+          let records = []
+          try { records = (await queryService.listSessions()) || [] } catch (error) { return { ok: false, message: '读会话列表失败：' + String(error && error.message ? error.message : error) } }
+          const found = []
+          for (const record of records.slice(0, Math.max(1, Math.min(30, Number(limit) || 8)))) {
+            const id = record && record.header && record.header.id
+            if (!id) continue
+            try {
+              const snapshot = await queryService.readSession(id)
+              const events = Array.isArray(snapshot && snapshot.events) ? snapshot.events : []
+              found.push(...candidatesFromEvents(events, { sessionId: id, max: 2 }))
+            } catch {}
+          }
+          const seen = new Set()
+          const unique = found.filter((item) => {
+            const key = item.title.replace(/[^\u4e00-\u9fa5a-zA-Z0-9]/g, '')
+            if (!key || seen.has(key)) return false
+            seen.add(key)
+            return true
+          })
+          return { ok: true, candidates: unique.slice(0, 10) }
+        },
+        prompt: async (sessionId, text) => {
+          const id = String(sessionId || '').trim()
+          if (!id) return { ok: false, message: '给个会话 id' }
+          const controller = safeGet(ctx, 'sessionController')
+          if (!controller || typeof controller.prompt !== 'function') return { ok: false, message: '这个环境不能给会话发消息' }
+          const abort = new AbortController()
+          const timer = setTimeout(() => abort.abort(), 30_000)
+          try {
+            await controller.prompt(
+              { requestId: randomUUID(), sessionId: id, mode: 'queue', content: [{ type: 'text', text: String(text || '').slice(0, 4000) }] },
+              abort.signal,
+            )
+            return { ok: true }
+          } catch (error) {
+            return { ok: false, message: '没发进去：' + String(error && error.message ? error.message : error) }
+          } finally {
+            clearTimeout(timer)
+          }
+        },
+      }
+      const toolset = createToolset({ ledger, inbox, historian, handover, config, snapshot: () => runtime.snapshot, spawner, brain, notifier, finder, pusher, tasks: taskOps, taskFlow, roleChats: { secretary: secretaryChat, ceo: ceoRoleChat, historian: historianChat }, sessions: sessionOps, log })
         for (const definition of toolset) {
           ctx.effect(() => toolService.register(definition))
         }
@@ -370,7 +488,16 @@ export function apply(ctx, configIn = {}) {
       ctx.webServer.register({
         kind: 'exact',
         path: `${ROUTE_PREFIX}/state`,
-        handler: (_req, res) => sendJson(res, 200, buildState(view())),
+        handler: (_req, res) => {
+          const openTasks = ceoRoleChat.readTasks().filter((task) => task.status === '待办' || task.status === '进行中')
+          const state = buildState({ ...view(), openTasks })
+          state.tasks = openTasks
+            .filter((task) => !['完成', '已归档', '已记忆', '已作废'].includes(task.status))
+            .sort((a, b) => ((b.priority && b.priority.level) || 0) - ((a.priority && a.priority.level) || 0))
+            .slice(0, 6)
+            .map((task) => ({ id: task.id, title: task.title, status: task.status, priority: task.priority || null }))
+          sendJson(res, 200, state)
+        },
       }),
     )
 
@@ -378,7 +505,11 @@ export function apply(ctx, configIn = {}) {
       ctx.webServer.register({
         kind: 'exact',
         path: `${ROUTE_PREFIX}/board`,
-        handler: (_req, res) => sendJson(res, 200, Object.assign({}, buildBoard(view()), { tasks: readBoardTasks(store) })),
+        handler: (_req, res) => {
+          const tasks = ceoRoleChat.readTasks()
+          const openTasks = tasks.filter((task) => task.status === '待办' || task.status === '进行中')
+          sendJson(res, 200, Object.assign({}, buildBoard({ ...view(), openTasks }), { tasks }))
+        },
       }),
     )
 
@@ -652,6 +783,7 @@ export function apply(ctx, configIn = {}) {
             // FIX-22：HTTP 默认只查不写；要真写必须显式 dryRun:false
             dryRun: body && body.dryRun === false ? false : true,
           })
+          recompute()
           audit.write({
             role: 'historian',
             action: 'run',
@@ -735,6 +867,71 @@ export function apply(ctx, configIn = {}) {
       }),
     )
 
+    // 2026-10-26 夜：CEO 按钮「开新会话（任务）」——用输入框里的任务真建 steward-ceo 会话
+    disposers.push(
+      ctx.webServer.register({
+        kind: 'exact',
+        path: `${ROUTE_PREFIX}/ceo/open-task`,
+        handler: async (req, res) => {
+          if (req.method && String(req.method).toUpperCase() !== 'POST') {
+            return sendJson(res, 405, { ok: false, code: 'method_not_allowed', message: '这个接口只接受 POST' })
+          }
+          if (!writeGuard(req, res)) return
+          const body = await readJsonBody(req)
+          if (body && body.__invalidJson) {
+            return sendJson(res, 400, { ok: false, code: 'invalid_json', message: '请求体不是合法 JSON' })
+          }
+          const task = String((body && body.task) || '').trim()
+          if (!task) {
+            return sendJson(res, 400, { ok: false, code: 'empty_task', message: '先在输入框写清楚要开的任务，再点「开新会话（任务）」' })
+          }
+          const made = secretaryChat.assignTask({ title: task, assignee: 'ceo', by: 'ceo', facts: '（CEO 按钮开任务会话时自动登记）' })
+          if (!made || !made.ok) {
+            return sendJson(res, 200, made || { ok: false, code: 'assign_failed', message: '任务登记失败' })
+          }
+          const card = taskFlow.writeHandoff({ task: made.task })
+          const executed = await ceoExecutor.execute({ task, handoffCard: card.ok ? card.path : '' })
+          if (executed.ok) {
+            ceoRoleChat.patchTask(made.task.id, { sessionId: executed.sessionId, handoffCard: card.ok ? card.path : '' })
+            taskFlow.writeHandoff({ task: { ...made.task, sessionId: executed.sessionId }, sessionId: executed.sessionId })
+            executed.taskId = made.task.id
+            executed.handoffCard = card.ok ? card.path : ''
+          } else {
+            ceoRoleChat.patchTask(made.task.id, { status: '待办', spawnError: String(executed.message || 'no_session') })
+            executed.taskId = made.task.id
+          }
+          audit.write({
+            role: 'ceo',
+            action: 'execute:session:button',
+            target: executed.ok ? String(executed.sessionId || '') : 'failed',
+            result: executed.ok ? 'ok' : 'failed',
+            reason: executed.ok ? task.slice(0, 80) : executed.code,
+          })
+          sendJson(res, executed.ok ? 200 : (executed.httpStatus || 502), executed)
+        },
+      }),
+    )
+
+    // 角色会话明文同步：看板聊天窗显示 CEO/秘书/史官会话里真正发生过的话
+    disposers.push(
+      ctx.webServer.register({
+        kind: 'exact',
+        path: `${ROUTE_PREFIX}/role/history`,
+        handler: async (req, res) => {
+          if (req.method && String(req.method).toUpperCase() !== 'GET') {
+            return sendJson(res, 405, { ok: false, code: 'method_not_allowed', message: '这个接口只接受 GET' })
+          }
+          const url = new URL(req.url || '/', 'http://127.0.0.1')
+          const role = String(url.searchParams.get('role') || 'ceo')
+          const chats = new Map([['secretary', secretaryChat], ['ceo', ceoRoleChat], ['historian', historianChat]])
+          const chat = chats.get(role)
+          if (!chat) return sendJson(res, 200, { ok: false, code: 'bad_role', message: 'role 只能是 secretary / ceo / historian' })
+          const result = await chat.history(30)
+          sendJson(res, 200, result)
+        },
+      }),
+    )
+
     // 2026-10-26 新增：CEO 聊天入口（看板右侧直接聊；带问题让模型结合台账回答）
     disposers.push(
       ctx.webServer.register({
@@ -758,6 +955,7 @@ export function apply(ctx, configIn = {}) {
           // D-20 ①：CEO 聊天里"接下/接手/完成/转交秘书 [K-xxx]"都要真的落到任务板
           // 支持按任务号；没写任务号就取第一条挂给 CEO 的未完成任务；问句不触发
           let taskChange = null
+          let autoSession = null
           const taskIntent = detectTaskIntent(question)
           if (taskIntent.matched) {
             const tasks = ceoRoleChat.readTasks()
@@ -793,6 +991,18 @@ export function apply(ctx, configIn = {}) {
                 taskChange = changed && changed.ok
                   ? { ok: true, label: taskIntentLabel(taskIntent), task: changed.task }
                   : { ok: false, message: (changed && changed.message) || '改任务状态失败' }
+                // 接下任务后自动开一个 CEO 执行会话：已有会话不重复开
+                if (taskChange.ok && taskIntent.action === '进行中' && !target.sessionId) {
+                  const card = taskFlow.writeHandoff({ task: target })
+                  const spawned = await ceoExecutor.execute({ task: target.title, handoffCard: card.ok ? card.path : '' })
+                  if (spawned && spawned.ok) {
+                    ceoRoleChat.patchTask(target.id, { sessionId: spawned.sessionId, handoffCard: card.ok ? card.path : '' })
+                    if (card.ok) taskFlow.writeHandoff({ task: { ...target, sessionId: spawned.sessionId }, sessionId: spawned.sessionId })
+                  } else if (typeof ceoRoleChat.patchTask === 'function') {
+                    ceoRoleChat.patchTask(target.id, { spawnError: String((spawned && spawned.message) || 'no_session') })
+                  }
+                  autoSession = spawned && spawned.ok ? spawned : { ok: false, message: (spawned && spawned.message) || '开会话失败' }
+                }
               }
             } else if (taskIntent.taskId) {
               taskChange = { ok: false, message: '任务板里没有 ' + taskIntent.taskId }
@@ -802,6 +1012,8 @@ export function apply(ctx, configIn = {}) {
           const viaSession = await ceoRoleChat.chat(question)
           if (taskChange && taskChange.ok && viaSession && viaSession.ok) {
             viaSession.text = (viaSession.text || '') + String.fromCharCode(10, 10) + '（' + taskChange.label + '：' + taskChange.task.id + ' ' + taskChange.task.title + '）'
+            if (autoSession && autoSession.ok) viaSession.text += String.fromCharCode(10) + '（已开执行会话：' + autoSession.sessionTitle + ' ' + autoSession.sessionId + '）'
+            if (autoSession && !autoSession.ok) viaSession.text += String.fromCharCode(10) + '（任务已接下，但执行会话没开成：' + autoSession.message + '）'
           }
           if (taskChange && !taskChange.ok && viaSession) {
             const note = '（' + taskChange.message + '）'
@@ -874,6 +1086,10 @@ export function apply(ctx, configIn = {}) {
           if (delegate && delegate[1] && delegate[1].trim()) {
             const assigned = secretaryChat.assignTask({ title: delegate[1].trim(), assignee: 'ceo', by: 'secretary' })
             if (assigned && assigned.ok) assignedTask = assigned.task
+          if (assignedTask) {
+            const label = question.slice(0, 800)
+            try { await ceoRoleChat.notice('用户转交任务 ' + assignedTask.id + '：' + assignedTask.title + '\n原话：' + label + '\n请接下并按需要开任务会话。') } catch {}
+          }
           }
           // 秘书不能"嘴上说问过 CEO"：说问就必须真转
           let autoHandoff = null
@@ -1098,7 +1314,7 @@ export function apply(ctx, configIn = {}) {
             }
             if (action === 'archive') {
               const archived = ceoRoleChat.setTaskStatus(id, '已归档', { assignee: 'secretary' })
-              if (archived && archived.ok) ceoRoleChat.notice('【系统记录】任务 ' + id + ' 已归档，交给秘书收尾。')
+              if (archived && archived.ok) void ceoRoleChat.notice('【系统记录】任务 ' + id + ' 已归档，交给秘书收尾。').catch(() => {})
               audit.write({ role: 'ceo', action: 'task:archive', target: id, result: archived && archived.ok ? 'ok' : 'failed' })
               return sendJson(res, 200, archived || { ok: false, code: 'failed', message: '归档失败' })
             }
@@ -1106,7 +1322,7 @@ export function apply(ctx, configIn = {}) {
               try {
                 const feed = writeHistorianFeed({ dataDir, task: current })
                 const remembered = ceoRoleChat.setTaskStatus(id, '已记忆', { assignee: 'historian' })
-                if (remembered && remembered.ok) ceoRoleChat.notice('【系统记录】任务 ' + id + ' 已存为记忆，记忆卡：' + feed.file)
+                if (remembered && remembered.ok) void ceoRoleChat.notice('【系统记录】任务 ' + id + ' 已存为记忆，记忆卡：' + feed.file).catch(() => {})
                 audit.write({ role: 'ceo', action: 'task:remember', target: id, result: remembered && remembered.ok ? 'ok' : 'failed', reason: feed.file })
                 return sendJson(res, 200, remembered ? { ...remembered, memoryPath: feed.file } : { ok: false, code: 'failed', message: '记忆卡写不进去' })
               } catch (error) {
@@ -1118,7 +1334,7 @@ export function apply(ctx, configIn = {}) {
           if (!status) return sendJson(res, 200, { ok: false, code: 'empty', message: '给 id 和 status' })
           const changed = ceoRoleChat.setTaskStatus(id, status, assignee ? { assignee } : undefined)
           audit.write({ role: 'ceo', action: 'task:status', target: id + ':' + status + (assignee ? '→' + assignee : ''), result: changed && changed.ok ? 'ok' : 'failed' })
-          if (changed && changed.ok) ceoRoleChat.notice('【系统记录】任务 ' + id + ' 状态改为「' + status + '」。')
+          if (changed && changed.ok) void ceoRoleChat.notice('【系统记录】任务 ' + id + ' 状态改为「' + status + '」。').catch(() => {})
           sendJson(res, 200, changed || { ok: false, code: 'failed', message: '改不了' })
         },
       }),

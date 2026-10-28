@@ -12,7 +12,10 @@
  *   }
  */
 
+import { existsSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { fourQuestions, singleLine } from './analysis.js'
+import { EXECUTE_TITLE, buildExecutePrompt } from './ceo-execute.js'
 
 export const TOOL_NAMES = ['steward_secretary', 'steward_ceo', 'steward_historian']
 
@@ -28,8 +31,32 @@ const TEXT_OUTPUT = {
  * @param {{ledger:any, inbox:any, historian:any, handover:any, config:any, snapshot?:any, log?:Function}} deps
  */
 export function createToolset(deps) {
-  const { ledger, historian, handover, config, spawner, brain, notifier, finder, pusher, tasks: taskOps = null } = deps
+  const { ledger, historian, handover, config, spawner, brain, notifier, finder, pusher, tasks: taskOps = null, taskFlow = null, roleChats = {}, sessions: sessionOps = null } = deps
   const log = typeof deps.log === 'function' ? deps.log : () => {}
+
+  const ROLE_LABELS = { secretary: '秘书', ceo: 'CEO', historian: '史官' }
+  const messageTimes = []
+  function messageRateAllowed() {
+    const now = Date.now()
+    while (messageTimes.length && now - messageTimes[0] > 3600000) messageTimes.shift()
+    if (messageTimes.length >= 30) return false
+    messageTimes.push(now)
+    return true
+  }
+  const todayLocal = () => { const d = new Date(); const p = (n) => String(n).padStart(2, '0'); return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) }
+  async function messageRole(args, fromRole = '') {
+    const target = String((args && args.target) || '').trim()
+    const text = String((args && args.text) || '').trim().slice(0, 2000)
+    if (!target || !ROLE_LABELS[target]) return { ok: false, text: '发给谁？target 只能是 secretary / ceo / historian' }
+    if (target === fromRole) return { ok: false, text: '不用发给自己' }
+    if (!text) return { ok: false, text: '要发什么？text 不能为空' }
+    if (!messageRateAllowed()) return { ok: false, text: '一小时内最多发 30 条角色消息，先缓一缓' }
+    const chat = roleChats && roleChats[target]
+    if (!chat || typeof chat.notice !== 'function') return { ok: false, text: '没有这个角色的会话接口' }
+    const sent = await chat.notice('【角色消息】' + text)
+    if (!sent || !sent.ok) return { ok: false, text: ROLE_LABELS[target] + ' 的会话还没绑定，发不进去' }
+    return { ok: true, text: '已发给' + ROLE_LABELS[target] + '：' + text.slice(0, 80) + '（不需要再回复）' }
+  }
 
   function roleEnabled(role) {
     return Boolean(config && config.enabled && config.enabled[role])
@@ -37,13 +64,13 @@ export function createToolset(deps) {
 
   const secretary = {
     name: 'steward_secretary',
-    description: '秘书：记/查待办、给一句话摘要。只负责日常事务，不做判断；需要判断时用 steward_ceo。',
+    description: '秘书：记/查待办、摘要、把事转给 CEO（handoff_to_ceo）。不做判断；不要用团队工具。',
     parameters: {
       type: 'object',
       required: ['action'],
       additionalProperties: false,
       properties: {
-        action: { type: 'string', enum: ['add_todo', 'list_todos', 'summary', 'open_session', 'find_files', 'push_now', 'handoff_to_ceo'], description: '要做的事' },
+        action: { type: 'string', enum: ['add_todo', 'list_todos', 'summary', 'open_session', 'find_files', 'push_now', 'handoff_to_ceo', 'message_role', 'scan_sessions', 'scan_add'], description: '要做的事' },
         title: { type: 'string', description: '待办标题（add_todo 必填，≤120 字）；或新会话标题（open_session）' },
         due: { type: 'string', description: '截止日期，YYYY-MM-DD 或 今天/明天' },
         confirmed: { type: 'boolean', description: 'open_session 必填：用户是否已口头同意开新会话' },
@@ -54,17 +81,25 @@ export function createToolset(deps) {
         mostUrgent: { type: 'boolean', description: '用户亲口说"最紧急"才置 true' },
         mostImportant: { type: 'boolean', description: '用户亲口说"最重要"才置 true' },
         facts: { type: 'string', description: 'handoff_to_ceo：带过去的事实底稿（用户原话/上下文）' },
+        target: { type: 'string', enum: ['secretary', 'ceo', 'historian'], description: 'message_role：发给哪个角色' },
+        text: { type: 'string', maxLength: 2000, description: 'message_role：要发过去的话（≤2000）' },
       },
     },
     output: TEXT_OUTPUT,
     async execute(args) {
       if (!roleEnabled('secretary')) return { ok: false, text: '秘书现在是关闭的（enabled.secretary=false）' }
       const action = args && args.action
+      if (action === 'message_role') return await messageRole(args, 'secretary')
       if (action === 'handoff_to_ceo') {
         if (!taskOps || typeof taskOps.assign !== 'function') return { ok: false, text: '这个环境没有任务板接口' }
-        const made = taskOps.assign(String(args.title || '').trim(), String(args.facts || '').trim())
+        const facts = String(args.facts || '').trim()
+        const title = String(args.title || '').trim() || facts.split(/[。\n]/)[0].slice(0, 80).trim() || facts.slice(0, 80)
+        const made = taskOps.assign(title, facts)
         if (!made || !made.ok) return { ok: false, text: (made && made.message) || '没挂到 CEO 名下' }
-        return { ok: true, text: '已挂到 CEO 名下：' + made.task.id + ' ' + made.task.title + '（CEO 会自动接下）' }
+        const notified = roleChats && roleChats.ceo && typeof roleChats.ceo.notice === 'function'
+          ? await roleChats.ceo.notice('秘书转交任务 ' + made.task.id + '：' + made.task.title + '\n背景：' + facts.slice(0, 800) + '\n请接下并按需要开任务会话，完成后写结果、归档。')
+          : { ok: false }
+        return { ok: true, text: '已挂到 CEO 名下：' + made.task.id + ' ' + made.task.title + (notified.ok ? '（已通知 CEO 会话）' : '（CEO 会话没绑定，先挂在板上了）') }
       }
       if (action === 'add_todo') {
         const result = ledger.add({
@@ -136,6 +171,24 @@ export function createToolset(deps) {
           hits: result.hits,
         }
       }
+      if (action === 'scan_sessions') {
+        if (!sessionOps || typeof sessionOps.scan !== 'function') return { ok: false, text: '这个环境不能扫会话' }
+        const scanned = await sessionOps.scan(8)
+        if (!scanned.ok) return { ok: false, text: scanned.message || '扫不了' }
+        if (!scanned.candidates.length) return { ok: true, text: '扫了最近 8 个会话，没找到像待办的句子' }
+        return { ok: true, text: '扫到 ' + scanned.candidates.length + ' 条候选（只读，不自动确认）：\n' + scanned.candidates.map((item, i) => (i + 1) + '. ' + item.title + '（' + item.confidence + '，约 ' + (Math.max(1, Math.round(Number(item.estimate_slots) / 2)) + ' 小时') + '）').join('\n') }
+      }
+      if (action === 'scan_add') {
+        if (!sessionOps || typeof sessionOps.scan !== 'function') return { ok: false, text: '这个环境不能扫会话' }
+        const scanned = await sessionOps.scan(8)
+        if (!scanned.ok) return { ok: false, text: scanned.message || '扫不了' }
+        let added = 0
+        for (const item of scanned.candidates) {
+          const made = ledger.add({ title: item.title, urgency: item.urgency, importance: item.importance, source: { kind: 'session-scan', sessionId: item.sessionId, at: item.scannedAt }, detail: item.evidence, estimate_slots: item.estimate_slots })
+          if (made && made.ok) added += 1
+        }
+        return { ok: true, text: added ? '扫到并记成候选 ' + added + ' 条（都是候选，确认后才提醒）' : '扫到 ' + scanned.candidates.length + ' 条，但一条也没记进去' }
+      }
       if (action === 'summary') {
         const stats = ledger.stats()
         const text = `已确认 ${stats.confirmed.length} 条、待确认 ${stats.pendingCount} 条、今天完成 ${stats.doneToday || 0} 条。`
@@ -147,45 +200,106 @@ export function createToolset(deps) {
 
   const ceo = {
     name: 'steward_ceo',
-    description: 'CEO：对一件事做四问 + 单线分析；或生成交接卡（短卡 + 底账）。只做判断，不记流水账。',
+    description: 'CEO：判断、查/接/完成/归档任务、存为记忆、开任务会话（open_task）。只做判断与执行，不记流水账。',
     parameters: {
       type: 'object',
       required: ['action'],
       additionalProperties: false,
       properties: {
-        action: { type: 'string', enum: ['analyze', 'handover', 'notify_secretary', 'tasks', 'accept_task', 'complete_task', 'archive_task', 'remember_task'], description: '要做的事' },
+        action: { type: 'string', enum: ['analyze', 'handover', 'notify_secretary', 'tasks', 'accept_task', 'complete_task', 'archive_task', 'remember_task', 'open_task', 'message_role', 'sessions', 'send_session', 'scan_sessions'], description: '要做的事' },
         topic: { type: 'string', description: '交接卡主题（handover 必填）' },
-        task: { type: 'string', description: '一句话任务（handover 用）' },
+        task: { type: 'string', maxLength: 2000, description: '一句话任务（handover/open_task 用，≤2000）' },
         workspace: { type: 'string', description: '工作区（handover 用）' },
         write: { type: 'boolean', description: '是否真的写盘（默认 false，只返回文本）' },
         conclusion: { type: 'string', description: 'notify_secretary：一句话结论（≤60 字）' },
         todo: { type: 'array', items: { type: 'string' }, description: 'notify_secretary：留给秘书的待办（≤5 条）' },
         sessionId: { type: 'string', description: 'notify_secretary：涉及会话 id' },
         id: { type: 'string', description: 'accept/complete/archive/remember：任务号 K-xxx' },
+        query: { type: 'string', maxLength: 200, description: 'sessions：按标题/会话号搜索' },
+        sessionId: { type: 'string', description: 'send_session：目标会话 id' },
+        result: { type: 'string', description: 'complete_task：结果摘要/产出路径' },
+        target: { type: 'string', enum: ['secretary', 'ceo', 'historian'], description: 'message_role：发给哪个角色' },
+        text: { type: 'string', maxLength: 2000, description: 'message_role：要发过去的话（≤2000）' },
       },
     },
     output: TEXT_OUTPUT,
     async execute(args) {
       if (!roleEnabled('ceo')) return { ok: false, text: 'CEO 现在是关闭的（enabled.ceo=false）' }
       const action = args && args.action
+      if (action === 'message_role') return await messageRole(args, 'ceo')
+      if (action === 'sessions') {
+        if (!sessionOps || typeof sessionOps.list !== 'function') return { ok: false, text: '这个环境读不到会话列表' }
+        const rows = await sessionOps.list(args.query)
+        if (!rows.length) return { ok: true, text: '没找到匹配的会话' + (args.query ? '：' + String(args.query) : '') }
+        return { ok: true, text: rows.map((row) => row.id + '｜' + (row.title || '（无标题）') + '｜' + (row.live ? 'live' : '') + (row.preset ? '｜' + row.preset : '')).join('\n') }
+      }
+      if (action === 'send_session') {
+        if (!sessionOps || typeof sessionOps.prompt !== 'function') return { ok: false, text: '这个环境不能给会话发消息' }
+        const id = String((args && args.sessionId) || '').trim()
+        const text = String((args && args.text) || '').trim()
+        if (!id) return { ok: false, text: '给个会话 id（先用 sessions 找）' }
+        if (!text) return { ok: false, text: '要发什么指令？' }
+        const sent = await sessionOps.prompt(id, '【CEO 指令】' + text)
+        if (!sent || !sent.ok) return { ok: false, text: (sent && sent.message) || '没发进去' }
+        return { ok: true, text: '已把指令发进会话 ' + id + '（一次性，不新建会话）' }
+      }
+      if (action === 'open_task') {
+        if (!spawner || typeof spawner.spawn !== 'function') return { ok: false, text: '这个环境不能开新会话（spawner 不可用）' }
+        const task = String((args && (args.task || args.topic)) || '').trim().slice(0, 2000)
+        if (!task) return { ok: false, text: '要开什么任务会话？给一句任务说明' }
+        if (!taskOps || typeof taskOps.assign !== 'function') return { ok: false, text: '这个环境没有任务板接口' }
+        const made = taskOps.assign(task, '（CEO 开任务会话时自动登记）')
+        if (!made || !made.ok) return { ok: false, text: (made && made.message) || '任务登记失败' }
+        const card = taskFlow && typeof taskFlow.writeHandoff === 'function' ? taskFlow.writeHandoff({ task: made.task }) : { ok: false }
+        const spawned = await spawner.spawn({
+          title: EXECUTE_TITLE,
+          prompt: buildExecutePrompt(task, { handoffCard: card.ok ? card.path : '' }),
+          confirmedByAuthor: true,
+        })
+        if (!spawned || !spawned.ok) {
+          if (typeof taskOps.patch === 'function') taskOps.patch(made.task.id, { status: '待办', spawnError: String((spawned && spawned.message) || 'no_session') })
+          return { ok: false, text: '任务已登记 ' + made.task.id + '，但开会话失败：' + String((spawned && spawned.message) || '没建起来') + '（已退回待办）' }
+        }
+        if (typeof taskOps.patch === 'function') taskOps.patch(made.task.id, { sessionId: spawned.sessionId, handoffCard: card.ok ? card.path : '' })
+        const card2 = taskFlow && typeof taskFlow.writeHandoff === 'function' ? taskFlow.writeHandoff({ task: { ...made.task, sessionId: spawned.sessionId }, sessionId: spawned.sessionId }) : card
+        return { ok: true, text: '已开好任务会话「' + EXECUTE_TITLE + '」（' + spawned.sessionId + '）：任务 ' + made.task.id + ' 已登记，交接卡：' + (card2.ok ? card2.path : '（没写成）') }
+      }
       if (action === 'tasks') {
         if (!taskOps || typeof taskOps.list !== 'function') return { ok: false, text: '这个环境没有任务板接口' }
         const list = taskOps.list()
         const open = list.filter((task) => !['完成', '已归档', '已记忆'].includes(task.status))
         if (!open.length) return { ok: true, text: '任务板上没有待办任务。' }
-        return { ok: true, text: open.map((task) => task.id + '｜' + task.title + '｜' + (task.assignee === 'ceo' ? 'CEO' : task.assignee) + '｜' + task.status).join('\n') }
+        return { ok: true, text: open.map((task) => task.id + '｜' + task.title + '｜优先级：' + ((task.priority && task.priority.label) || '常规') + '｜' + (task.assignee === 'ceo' ? 'CEO' : task.assignee) + '｜' + task.status).join('\n') }
       }
       if (['accept_task', 'complete_task', 'archive_task', 'remember_task'].includes(action)) {
         if (!taskOps) return { ok: false, text: '这个环境没有任务板接口' }
         const id = String((args && args.id) || '').trim().toUpperCase()
         if (!id) return { ok: false, text: '给个任务号 K-xxx' }
+        const before = typeof taskOps.list === 'function' ? taskOps.list().find((item) => item.id === id) : null
         let changed = null
         if (action === 'accept_task') changed = taskOps.setStatus(id, '进行中')
         if (action === 'complete_task') changed = taskOps.setStatus(id, '完成')
         if (action === 'archive_task') changed = taskOps.archive(id)
         if (action === 'remember_task') changed = taskOps.remember(id)
         if (!changed || !changed.ok) return { ok: false, text: (changed && changed.message) || '没处理成' }
-        return { ok: true, text: '已处理 ' + id + (changed.text ? '：' + changed.text : '') + '（当前状态：' + (changed.task ? changed.task.status : '') + '）' }
+        let sessionNote = ''
+        if (action === 'accept_task' && before && !before.sessionId && spawner && typeof spawner.spawn === 'function') {
+          const card = taskFlow && typeof taskFlow.writeHandoff === 'function' ? taskFlow.writeHandoff({ task: before }) : { ok: false }
+          const spawned = await spawner.spawn({
+            title: EXECUTE_TITLE,
+            prompt: buildExecutePrompt(before.title, { handoffCard: card.ok ? card.path : '' }),
+            confirmedByAuthor: true,
+          })
+          if (spawned && spawned.ok && typeof taskOps.patch === 'function') taskOps.patch(id, { sessionId: spawned.sessionId, handoffCard: card.ok ? card.path : '' })
+          if (spawned && spawned.ok && taskFlow && typeof taskFlow.writeHandoff === 'function') taskFlow.writeHandoff({ task: { ...before, sessionId: spawned.sessionId }, sessionId: spawned.sessionId })
+          sessionNote = spawned && spawned.ok ? '；已开执行会话 ' + spawned.sessionId : '；执行会话没开成：' + String((spawned && spawned.message) || '')
+        }
+        if (action === 'complete_task' && args && args.result && taskFlow && typeof taskFlow.writeResult === 'function') {
+          const written = taskFlow.writeResult({ task: before || changed.task, result: args.result })
+          if (written && written.ok && typeof taskOps.patch === 'function') taskOps.patch(id, { resultPath: written.path, resultSummary: String(args.result).slice(0, 4000) })
+          sessionNote += written && written.ok ? '；结果已写 ' + written.path : '；结果没写成'
+        }
+        return { ok: true, text: '已处理 ' + id + (changed.text ? '：' + changed.text : '') + '（当前状态：' + (changed.task ? changed.task.status : '') + '）' + sessionNote }
       }
       if (action === 'analyze') {
         const liveSnapshot = typeof deps.snapshot === 'function' ? deps.snapshot() : deps.snapshot
@@ -214,28 +328,67 @@ export function createToolset(deps) {
         const where = result.written ? `\n已写盘：${result.written.cardPath}\n底账：${result.written.ledgerPath}` : '\n（没写盘；要落盘就把 write 设成 true）'
         return { ok: true, text: '交接卡（短卡）：\n' + result.card + where, card: result.card, written: result.written }
       }
-      return { ok: false, text: 'CEO 支持的 action：analyze / handover / notify_secretary / tasks / accept_task / complete_task / archive_task / remember_task' }
+      return { ok: false, text: 'CEO 支持的 action：analyze / handover / notify_secretary / tasks / accept_task / complete_task / archive_task / remember_task / open_task / sessions / send_session / message_role' }
     },
   }
 
   const historianTool = {
     name: 'steward_historian',
-    description: '史官：按档位增量读会话并记录（只记录、不判断）。发布默认开启；读不了会如实报。',
+    description: '史官：增量读会话并记录，或列出已落盘言行录（list_records）。只记录、不判断。',
     parameters: {
       type: 'object',
       required: ['action'],
       additionalProperties: false,
       properties: {
-        action: { type: 'string', enum: ['read_increment'], description: '目前只有增量读取' },
+        action: { type: 'string', enum: ['read_increment', 'list_records', 'list_feeds', 'message_role'], description: '增量读取 / 列出言行录 / 列出投喂卡 / 发消息' },
         sessionId: { type: 'string', description: '只读指定会话；不填就按列表读' },
         dryRun: { type: 'boolean', description: '只算不写（默认 true）' },
+        date: { type: 'string', description: 'list_records：日期 YYYY-MM-DD（默认今天）' },
+        limit: { type: 'number', description: 'list_records/list_feeds：最多列几条（默认 50，最多 200）' },
+        target: { type: 'string', enum: ['secretary', 'ceo', 'historian'], description: 'message_role：发给哪个角色' },
+        text: { type: 'string', maxLength: 2000, description: 'message_role：要发过去的话（≤2000）' },
       },
     },
     output: TEXT_OUTPUT,
     async execute(args) {
       if (!roleEnabled('historian')) return { ok: false, text: '史官现在是关闭的（enabled.historian=false）' }
       const action = args && args.action
-      if (action !== 'read_increment') return { ok: false, text: '史官支持的 action：read_increment' }
+      if (action === 'message_role') return await messageRole(args, 'historian')
+      if (action === 'list_feeds') {
+        if (!historian || !historian.historianRoot) return { ok: false, text: '这个环境读不到史官目录' }
+        const limit = Math.max(1, Math.min(200, Number((args && args.limit) || 20)))
+        const date = String((args && args.date) || '').trim()
+        let files = []
+        try {
+          files = (await import('node:fs')).readdirSync(join(historian.historianRoot, '投喂'))
+            .filter((name) => name.endsWith('.md') && (!date || name.startsWith(date)))
+            .sort()
+            .slice(-limit)
+        } catch {
+          return { ok: true, text: '还没有投喂卡（任务完成并「存为记忆」后才会生成）' }
+        }
+        if (!files.length) return { ok: true, text: '没有符合条件的投喂卡' }
+        const chunks = []
+        for (const name of files) {
+          try {
+            const text = readFileSync(join(historian.historianRoot, '投喂', name), 'utf8').trim()
+            chunks.push('### ' + name + '\n' + text)
+          } catch {}
+        }
+        return { ok: true, text: '投喂卡 ' + files.length + ' 张：\n\n' + chunks.join('\n\n').slice(0, 12000) }
+      }
+      if (action === 'list_records') {
+        if (!historian || !historian.historianRoot) return { ok: false, text: '这个环境读不到言行录目录' }
+        const date = String((args && args.date) || '').trim() || todayLocal()
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return { ok: false, text: '日期格式要 YYYY-MM-DD' }
+        const limit = Math.max(1, Math.min(200, Number((args && args.limit) || 50)))
+        const file = join(historian.historianRoot, '言行录', date.slice(0, 7), date + '.md')
+        if (!existsSync(file)) return { ok: true, text: '没有 ' + date + ' 的言行录（点「真跑一次」才会写）' }
+        const lines = readFileSync(file, 'utf8').split(/\r?\n/).filter((line) => line.startsWith('- '))
+        if (!lines.length) return { ok: true, text: date + ' 的言行录还没有记录' }
+        return { ok: true, text: ('言行录 ' + date + ' 共 ' + lines.length + ' 条，最后 ' + Math.min(limit, lines.length) + ' 条：\n' + lines.slice(-limit).join('\n')).slice(0, 12000) }
+      }
+      if (action !== 'read_increment') return { ok: false, text: '史官支持的 action：read_increment / list_records / list_feeds' }
       const result = await historian.record({
         sessionId: args.sessionId,
         dryRun: args.dryRun === undefined ? true : Boolean(args.dryRun),

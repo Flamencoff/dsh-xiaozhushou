@@ -26,7 +26,7 @@ jobs:
           node --check index.js
           node --check client.js
           for f in core/*.js roles/*.js scripts/*.mjs test/harness.mjs; do node --check "$f"; done
-      - name: 自测（145 项）
+      - name: 自测（204 项）
         run: node test/harness.mjs
       - name: 发布自检
         run: node scripts/check-release.mjs

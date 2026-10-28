@@ -9,10 +9,10 @@
 DSH Host
  └── cordis.patch.yml 插入 1 行插件：id=steward, name=dsh-xiaozhushou
       └── index.js（宿主半，1215 行）
-           ├── 注册 24 条 HTTP 路由（/api/dsh-xiaozhushou/*，本机 127.0.0.1 回环接口，不是对外网关）
+           ├── 注册 26 条 HTTP 路由（/api/dsh-xiaozhushou/*，本机 127.0.0.1 回环接口，不是对外网关）
            ├── 注册 3 个工具（steward_secretary / steward_ceo / steward_historian）
            ├── 注册 3 个角色 preset + 60s 心跳
-           └── 组装 core/ 30 个模块
+           └── 组装 core/ 37 个模块
       └── client.js（客户端半，1166 行）
            └── 注册 3 个插槽：sidebar.panellist / main / shell.overlay
 ```
@@ -61,7 +61,7 @@ DSH Host
 
 | 契约 | 当前值 | 兼容要求 |
 |---|---|---|
-| HTTP 路由（24 条） | 全部注册在 DSH **本机 Web 服务**上（`http://127.0.0.1:<端口>/api/dsh-xiaozhushou/*`） | **回环接口**，不另开端口、不监听 0.0.0.0、不做对外网关；改前缀必须同步 `client.js` + 文档 + 测试 |
+| HTTP 路由（26 条） | 全部注册在 DSH **本机 Web 服务**上（`http://127.0.0.1:<端口>/api/dsh-xiaozhushou/*`） | **回环接口**，不另开端口、不监听 0.0.0.0、不做对外网关；改前缀必须同步 `client.js` + 文档 + 测试 |
 | 工具名 | `steward_secretary` / `steward_ceo` / `steward_historian` | 模型已在使用，改名要留别名 |
 | preset id | `steward-secretary` / `steward-ceo` / `steward-historian` | 旧会话可能引用，改名要迁移 |
 | 数据文件 | `待办.json`、`任务.json`、`审计.jsonl`、`采集.json`、`看板.json`、`状态.json`、`提醒状态.json`、`推送状态.json`、`归档状态.json` | 字段只增不删；删字段必须写迁移 |
@@ -115,7 +115,7 @@ DSH Host
 | D-18 | 数据目录默认 `%USERPROFILE%\.dsh-session-steward\data`，兼容旧指针迁移 | 已完成（0.47.0：新指针优先，旧 `.dsh-xiaozhushou` 指针回退读取） | `fix/datadir-name` |
 | D-19 | 长期记忆简化版：四文件（用户画像 / 近期交代 / 长期规划 / 情绪与处境），史官周更，秘书/CEO 按需读 | 已完成（0.47.0：`core/memory.js` + 摘要 ≤420 字进上下文） | `feat/memory-files` |
 | D-20 | CEO：判断后会话/工具式硬动作；用户说"开新会话执行"→ 真开会话并跑通权限审批 | 已完成（0.47.0：接下/完成/转交 + `core/ceo-execute.js`） | `feat/ceo-execute` |
-| D-16 | 发布说明写清"24 条路由 = 本地回环接口"，不是对外网关 | 已完成（0.47.0：README/RELEASE/ARCHITECTURE 三处 + 守卫用例） | `docs/route-note` |
+| D-16 | 发布说明写清"26 条路由 = 本地回环接口"，不是对外网关 | 已完成（0.47.0：README/RELEASE/ARCHITECTURE 三处 + 守卫用例） | `docs/route-note` |
 
 **执行顺序**：D-18 → D-02 → D-01 → D-05/06 → D-16 → D-19 → D-20。
 每条分支的验收 = `node test/harness.mjs` + 发布自检 + 依赖体检 + `53` 的 T8 对应专项；

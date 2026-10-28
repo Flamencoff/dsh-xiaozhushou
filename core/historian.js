@@ -25,7 +25,7 @@ export function createHistorian({ dataDir, store, cursor, source, config, memory
   /**
    * @param {{sessionId?:string, scope?:'session'|'all', tier?:string, dryRun?:boolean, now?:Date}} request
    */
-  async function record(request = {}) {
+  async function recordOnce(request = {}) {
     if (!enabled()) {
       return {
         ok: false,
@@ -159,6 +159,17 @@ export function createHistorian({ dataDir, store, cursor, source, config, memory
       sessions: perSession,
       memory: memoryUpdate,
       message: failedSessions ? `有 ${failedSessions} 个会话没读成，其余照常` : `记了 ${written} 条`,
+    }
+  }
+
+  let running = false
+  async function record(request = {}) {
+    if (running) return { ok: false, code: 'busy', message: '史官正在读，等这次跑完再试' }
+    running = true
+    try {
+      return await recordOnce(request)
+    } finally {
+      running = false
     }
   }
 

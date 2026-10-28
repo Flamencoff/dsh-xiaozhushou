@@ -17,9 +17,12 @@ export const DEFAULT_CONFIG = {
     // 发布默认读全部会话（mode: 'all'）；sandbox 只读标题以 [实验] 开头的测试会话 + 三个角色会话
     scope: { mode: 'all', prefixes: ['[实验]'] },
     exclude: [],
+    // 史官节律（旧设计：每天 21:45 记录、周五 21:45 复盘、平时休眠）
+    schedule: { enabled: true, dailyAt: '21:45', weeklyAt: '21:45', weeklyWeekday: 5 },
   },
   alarm: {
     fixedTimes: ['09:00', '13:00', '18:00'],
+    policy: 'confirmed',
     quietHours: { from: '23:00', to: '07:00' },
     dedupeMinutes: 60,
     bootGateMinutes: 10,
@@ -75,6 +78,16 @@ export function resolveConfig(raw) {
       config.historian.budgets.maxTokens = clampInt(b.maxTokens, 500, 200000, config.historian.budgets.maxTokens)
       config.historian.budgets.windowHours = clampInt(b.windowHours, 1, 24 * 365, config.historian.budgets.windowHours)
     }
+    if (input.historian.schedule && typeof input.historian.schedule === 'object') {
+      const s = input.historian.schedule
+      if (typeof s.enabled === 'boolean') config.historian.schedule.enabled = s.enabled
+      const timeOk = (value) => typeof value === 'string' && /^([01]?\d|2[0-3]):[0-5]\d$/.test(value.trim())
+      if (timeOk(s.dailyAt)) config.historian.schedule.dailyAt = s.dailyAt.trim()
+      else if (s.dailyAt !== undefined) warnings.push('historian.schedule.dailyAt 要 HH:mm，已用默认 21:45')
+      if (timeOk(s.weeklyAt)) config.historian.schedule.weeklyAt = s.weeklyAt.trim()
+      else if (s.weeklyAt !== undefined) warnings.push('historian.schedule.weeklyAt 要 HH:mm，已用默认 21:45')
+      if (Number.isInteger(s.weeklyWeekday) && s.weeklyWeekday >= 0 && s.weeklyWeekday <= 6) config.historian.schedule.weeklyWeekday = s.weeklyWeekday
+    }
   }
 
   // 2026-10-26 修 A-07：找文件的白名单根目录以前不可配（find 永远全工作区内容检索）
@@ -95,6 +108,7 @@ export function resolveConfig(raw) {
 
   if (input.alarm && typeof input.alarm === 'object') {
     const alarm = input.alarm
+    if (alarm.policy === 'classic' || alarm.policy === 'confirmed') config.alarm.policy = alarm.policy
     if (Array.isArray(alarm.fixedTimes)) {
       const times = alarm.fixedTimes.filter(isClock).sort()
       if (times.length) config.alarm.fixedTimes = times

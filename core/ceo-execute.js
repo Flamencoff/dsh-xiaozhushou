@@ -15,7 +15,7 @@
  */
 
 export const EXECUTE_TITLE = 'dsh小助手 · CEO 执行'
-export const EXECUTE_PRESET = 'steward-ceo'
+export const EXECUTE_PRESET = null
 
 /**
  * 识别"开新会话执行 …"意图。
@@ -41,10 +41,12 @@ export function detectExecuteIntent(text) {
 }
 
 /** 组第一句：任务 + 边界 + 审批提示（确定性，不调模型） */
-export function buildExecutePrompt(task) {
+export function buildExecutePrompt(task, options = {}) {
+  const card = String(options.handoffCard || '').trim()
   return (
     '任务：' + String(task || '').trim() + '\n\n' +
-    '（来自 CEO 面板「开新会话执行」：先复述任务与边界，再开始执行；' +
+    (card ? '交接卡：' + card + '（先读这张卡：任务、背景、边界、交付物、验收）\n\n' : '') +
+    '（这是 CEO 开的普通任务会话：先复述任务与边界，再开始执行；' +
     '需要读写文件、跑命令等权限时，在本会话里向我申请，不要假装已经批准。）'
   )
 }
@@ -53,7 +55,7 @@ export function buildExecutePrompt(task) {
  * @param {{spawner:{spawn:Function}}} deps
  */
 export function createCeoExecutor({ spawner }) {
-  async function execute({ text, task } = {}) {
+  async function execute({ text, task, handoffCard } = {}) {
     const intent = detectExecuteIntent(text)
     const wanted = String(task || '').trim() || intent.task
     if (!wanted) {
@@ -64,8 +66,8 @@ export function createCeoExecutor({ spawner }) {
     }
     const spawned = await spawner.spawn({
       title: EXECUTE_TITLE,
-      prompt: buildExecutePrompt(wanted),
-      agentPreset: EXECUTE_PRESET,
+      prompt: buildExecutePrompt(wanted, { handoffCard }),
+      ...(EXECUTE_PRESET ? { agentPreset: EXECUTE_PRESET } : {}),
       confirmedByAuthor: true,
     })
     if (!spawned || !spawned.ok) {
@@ -85,7 +87,7 @@ export function createCeoExecutor({ spawner }) {
       sessionId: spawned.sessionId,
       sessionTitle: EXECUTE_TITLE,
       agentPreset: EXECUTE_PRESET,
-      message: '已开好 CEO 执行会话「' + EXECUTE_TITLE + '」（' + spawned.sessionId + '）：任务写进第一句，权限审批会在该会话里弹。',
+      message: '已开好任务会话「' + EXECUTE_TITLE + '」（' + spawned.sessionId + '）：任务和交接卡写进第一句，权限审批会在该会话里弹。',
     }
   }
 

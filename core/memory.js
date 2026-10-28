@@ -30,7 +30,7 @@ export const AUTO_END = '<!-- AUTO:END -->'
 
 /** 四个记忆文件（顺序固定，便于看板/文档引用） */
 export const MEMORY_FILES = [
-  { key: 'profile', name: '用户画像.md', title: '用户画像', what: '交代总量、时间习惯、最近一条交代（来源：台账/任务板）' },
+  { key: 'profile', name: '用户画像.md', title: '用户画像', what: '交代台账事实、活跃节奏、常见主题、候选偏好、最近在忙（来源：台账/任务板/角色对话/言行录）' },
   { key: 'recent', name: '近期交代.md', title: '近期交代', what: '最近 14 天明确交代的事（台账/任务板原文；另附角色对话与言行录最近摘句）' },
   { key: 'plan', name: '长期规划.md', title: '长期规划', what: '未完成的已确认待办与任务（按截止日）' },
   { key: 'mood', name: '情绪与处境.md', title: '情绪与处境', what: '只做事实计数，不做情绪推断' },
@@ -148,15 +148,7 @@ export function createMemory({ store, dataDir, now = () => new Date() }) {
     if (data.roleDialogLines.length) recentParts.push('\n## 角色对话里你说过的（本地存档，最近 7 天）\n' + data.roleDialogLines.join('\n'))
     if (data.historianLines.length) recentParts.push('\n## 言行录最近记到的（最近 7 天）\n' + data.historianLines.join('\n'))
     return {
-      '用户画像.md':
-        head +
-        '\n## 交代总量\n' +
-        '- 待办台账共 ' + data.counts.total + ' 条：已完成 ' + data.counts.done + '、已确认 ' + data.counts.confirmed + '、候选 ' + data.counts.pending + '、已忽略 ' + data.counts.ignored + '\n' +
-        '- 共享任务板共 ' + data.counts.tasksTotal + ' 条：未完成 ' + data.counts.tasksOpen + '、已完成 ' + data.counts.tasksDone + '\n' +
-        '\n## 时间习惯\n' +
-        weekdayHabit(data.items) + '\n' +
-        '\n## 最近一条交代\n' +
-        (lastItemLine(data.items) || '- 还没有记过待办') + '\n',
+      '用户画像.md': renderProfile(data, head),
       '近期交代.md': head + '\n' + recentParts.join('\n') + '\n',
       '长期规划.md': head + '\n' + (planLines(data, 10) || '- 目前没有未完成的长期事项') + '\n',
       '情绪与处境.md':
@@ -170,7 +162,98 @@ export function createMemory({ store, dataDir, now = () => new Date() }) {
     }
   }
 
-  /** 周更：首次或 ≥7 天才写；只替换自动区，手写内容保留 */
+  /** 画像：事实 + 节奏 + 词频 + 候选偏好，不猜性格 */
+function renderProfile(data, head) {
+  const parts = [
+    head,
+    '\n## 交代台账（事实）\n',
+    '- 待办台账共 ' + data.counts.total + ' 条：已完成 ' + data.counts.done + '、已确认 ' + data.counts.confirmed + '、候选 ' + data.counts.pending + '、已忽略 ' + data.counts.ignored + '\n',
+    '- 共享任务板共 ' + data.counts.tasksTotal + ' 条：未完成 ' + data.counts.tasksOpen + '、已完成 ' + data.counts.tasksDone + '\n',
+    '\n## 活跃节奏（按记录时间，事实）\n',
+    activeSlotLine(data) + '\n',
+    '\n## 常出现的主题（词频，只作线索）\n',
+    frequentTerms(data) + '\n',
+    '\n## 你反复提到的偏好（原话摘录，待确认）\n',
+    preferenceLines(data) + '\n',
+    '\n## 最近在忙\n',
+    focusLines(data) + '\n',
+    '\n## 最近一条交代\n',
+    (lastItemLine(data.items) || '- 还没有记过待办') + '\n',
+  ]
+  if (data.items.length + data.taskList.length < 3 && !data.roleDialogLines.length) {
+    parts.push('\n> 目前记录还少，这份画像先按事实记账；等你多交代几件事，它会慢慢像你。\n')
+  }
+  return parts.join('')
+}
+
+function activeSlotLine(data) {
+  const slots = { 上午: 0, 下午: 0, 晚上: 0, 深夜: 0 }
+  let total = 0
+  for (const item of data.items.concat(data.taskList)) {
+    const at = Date.parse(item.createdAt || item.updatedAt || '')
+    if (!Number.isFinite(at)) continue
+    const hour = new Date(at).getHours()
+    total += 1
+    if (hour >= 6 && hour < 12) slots['上午'] += 1
+    else if (hour >= 12 && hour < 18) slots['下午'] += 1
+    else if (hour >= 18 && hour < 24) slots['晚上'] += 1
+    else slots['深夜'] += 1
+  }
+  if (!total) return '- 还没有带时间的记录'
+  const top = Object.entries(slots).sort((a, b) => b[1] - a[1]).filter(([, n]) => n > 0).slice(0, 2)
+  return '- 共 ' + total + ' 条带时间记录，最常出现在 ' + top.map(([k, n]) => k + '（' + n + ' 条）').join('、')
+}
+
+function frequentTerms(data) {
+  const texts = []
+  for (const item of data.items.concat(data.taskList)) if (item.title) texts.push(String(item.title))
+  for (const line of data.roleDialogLines.concat(data.historianLines)) texts.push(String(line).replace(/^[-\d\s｜:：]+/, ''))
+  const stop = new Set(['用户', '任务', '一下', '帮我', '看看', '这个', '那个', '可以', '什么', '怎么', '现在', '今天', '明天', '已经', '没有', '一个', '就是', '还是', '然后', '因为', '所以', '但是', '如果', '不是', '我们', '你们', '他们', '自己', '东西', '事情', '问题', '时候', '进行', '完成', '处理', '需求', '原话', '相关', '目前', '需要', '希望', '确认', '记录', '内容'])
+  const counts = new Map()
+  for (const raw of texts) {
+    const text = String(raw).replace(/[^\u4e00-\u9fa5]+/g, '')
+    if (text.length < 2) continue
+    const seen = new Set()
+    for (let n = 2; n <= 4; n += 1) {
+      for (let i = 0; i + n <= text.length; i += 1) {
+        const term = text.slice(i, i + n)
+        if (stop.has(term) || seen.has(term)) continue
+        if (!/[\u4e00-\u9fa5]/.test(term)) continue
+        seen.add(term)
+        counts.set(term, (counts.get(term) || 0) + 1)
+      }
+    }
+  }
+  const top = [...counts.entries()].filter(([, n]) => n >= 2).sort((a, b) => b[1] - a[1]).slice(0, 8)
+  if (!top.length) return '- 还看不出重复主题（多记几件就会出来）'
+  return top.map(([term, n]) => '- ' + term + '（' + n + ' 次）').join('\n')
+}
+
+function preferenceLines(data) {
+  const hit = []
+  const re = /(不要|别|必须|以后|统一|格式|简短|直接|人话|表格|字数|风格|先|记得|喜欢|习惯|每次|标点|标题|语气)/
+  for (const line of data.roleDialogLines.concat(data.historianLines)) {
+    const text = String(line).replace(/^[-\d\s｜:：]+/, '').trim()
+    if (text.length < 6 || text.length > 100) continue
+    if (!re.test(text)) continue
+    if (hit.includes(text)) continue
+    hit.push(text)
+  }
+  if (!hit.length) return '- 还没听到明确的偏好；以后你说“以后都这样/不要那样”，这里会记下来'
+  return hit.slice(-6).map((text) => '- “' + clip(text, 80) + '”（待确认）').join('\n')
+}
+
+function focusLines(data) {
+  const open = data.items
+    .filter((item) => item.status === '已确认' || item.status === '候选')
+    .concat(data.taskList.filter((task) => task.status !== '完成'))
+    .slice()
+    .sort((a, b) => Date.parse(b.updatedAt || b.createdAt || '') - Date.parse(a.updatedAt || a.createdAt || ''))
+  if (!open.length) return '- 现在没有未完成的事'
+  return open.slice(0, 5).map((item) => '- ' + (item.id || '') + ' ' + clip(item.title, 60) + (item.status ? '（' + item.status + '）' : '')).join('\n')
+}
+
+/** 周更：首次或 ≥7 天才写；只替换自动区，手写内容保留 */
   function maybeWeeklyUpdate(options = {}) {
     const at = options.now instanceof Date ? options.now : now()
     const ensured = ensure()
