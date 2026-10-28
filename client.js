@@ -189,12 +189,10 @@ window.__ModuleLoader__.load({
       '@media (prefers-reduced-motion: reduce){.ke-pet .art,.ke-pet .art .eye,.ke-pet .art .tail{animation:none}}',
       '.ke-pet .badge{position:absolute;right:2px;top:0;min-width:17px;height:17px;border-radius:9px;background:var(--red);color:#fff;font-size:10px;line-height:17px;text-align:center;box-shadow:0 0 0 2px #fff}',
       '.ke-pet .dot{position:absolute;right:8px;bottom:6px;width:9px;height:9px;border-radius:50%;box-shadow:0 0 0 3px rgba(255,255,255,.9)}',
-      '.ke-pet .dots{position:absolute;right:6px;bottom:4px;display:flex;gap:3px;align-items:center}',
-      '.ke-pet .dots i{width:8px;height:8px;border-radius:50%;display:block;box-shadow:0 0 0 2px rgba(255,255,255,.9)}',
-      '.ke-blink{animation:ke-lamp-blink 1300ms steps(1,end) infinite}',
-      // 用户定：灭的时候**完全消失**（不是半透明蒙层），灭的时间约 250ms（周期 1050ms）
-      // 用户定：周期 1300ms；灭的时候**完全消失**；灭的时长约 143ms（11% 周期）
-      '@keyframes ke-lamp-blink{0%,88%{opacity:1}89%,100%{opacity:0}}',
+      '.ke-pet .ke-lamp{position:absolute;right:4px;bottom:3px;width:14px;height:14px;border-radius:50%;box-shadow:0 0 0 2px rgba(255,255,255,.95),0 2px 5px rgba(0,0,0,.20),inset 0 -2px 2px rgba(0,0,0,.14),inset 0 1px 2px rgba(255,255,255,.65)}',
+      '.ke-pet .ke-lamp::after{content:"";position:absolute;left:3px;top:2px;width:5px;height:3px;border-radius:50%;background:rgba(255,255,255,.72);transform:rotate(-25deg);pointer-events:none}',
+      '.ke-blink{animation-name:ke-lamp-blink;animation-iteration-count:infinite;animation-timing-function:steps(1,end)}',
+      '@keyframes ke-lamp-blink{0%,72%{opacity:1}73%,100%{opacity:0}}',
       '.ke-lv{display:inline-flex;align-items:center;gap:3px;font-size:9.5px;padding:0 5px;border-radius:8px;border:1px solid #e5e6eb;color:#4e5969}',
       '.ke-lv i{width:6px;height:6px;border-radius:50%;display:block}',
       '.ke-lv.l5{color:#b32b1f;border-color:#ffc9c9;background:#ffece8}',
@@ -989,14 +987,24 @@ window.__ModuleLoader__.load({
     /* ── 提醒灯：1 个＝普通，2 个＝急，3 个＝最急（并闪烁） ── */
     const DOT_COLORS = { red: '#f53f3f', warn: '#ffb400', orange: '#ff8a00', blue: '#4d6bfe', green: '#00b42a' }
 
+    const DOT_DARK = { red: '#a8071a', warn: '#ad6800', orange: '#ad4e00', blue: '#2b4acb', green: '#087f23' }
+
     function renderDots(state, blinkMs) {
-      const color = DOT_COLORS[state.dot] || DOT_COLORS.green
-      const count = Math.max(1, Number(state.dots) || 1)
-      const lights = []
-      for (let i = 0; i < count; i += 1) lights.push(h('i', { key: i, style: { background: color } }))
-      const blinking = Boolean(state.blink)
-      const style = blinking && blinkMs ? { animationDuration: blinkMs + 'ms' } : undefined
-      return h('span', { className: 'dots' + (blinking ? ' ke-blink' : ''), style }, lights)
+      const lamp = state.lamp || {
+        color: state.dot || 'green',
+        mode: state.blink ? 'blink' : 'steady',
+        interval: state.blink ? 1300 : 0,
+        reason: '',
+      }
+      const color = DOT_COLORS[lamp.color] || DOT_COLORS.green
+      const dark = DOT_DARK[lamp.color] || DOT_DARK.green
+      const blinking = lamp.mode === 'blink'
+      const interval = Number(lamp.interval) || Number(blinkMs) || 800
+      const style = {
+        background: 'radial-gradient(circle at 32% 26%, #fff 0%, ' + color + ' 38%, ' + dark + ' 100%)',
+      }
+      if (blinking) style.animationDuration = interval + 'ms'
+      return h('span', { className: 'ke-lamp' + (blinking ? ' ke-blink' : ''), title: lamp.reason || '', style })
     }
 
     function levelTag(level, label) {
@@ -1165,7 +1173,8 @@ window.__ModuleLoader__.load({
       // 一隐藏就报 "Rendered fewer hooks than expected"，浮层变红框）
       if (hidden) return null
       const s = demo ? { ...rawData, dot: 'red', dots: 1, blink: true, count: 0, top: [], note: '灯闪预览 ' + blinkMs + 'ms' } : rawData
-      const dotColor = s.dot === 'red' ? '#f53f3f' : s.dot === 'warn' ? '#ffb400' : s.dot === 'blue' ? '#4d6bfe' : '#00b42a'
+      const lampColor = (s.lamp && s.lamp.color) || s.dot
+      const dotColor = lampColor === 'red' ? '#f53f3f' : lampColor === 'warn' ? '#ffb400' : lampColor === 'blue' ? '#4d6bfe' : '#00b42a'
       const size = open ? PET_EXPANDED : PET_COLLAPSED
       const placed = pos ? clampPos(pos.x, pos.y, size) : null
       const style = placed ? { left: placed.x + 'px', top: placed.y + 'px', right: 'auto' } : { right: '18px', top: '72px' }

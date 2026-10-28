@@ -10,6 +10,7 @@ import { rankByPriority, groupByPriority, overallSignal, computePriority } from 
 import { buildSchedule } from './estimate.js'
 import { buildSessionCards } from './session-cards.js'
 import { buildAttention } from './attention.js'
+import { lampDecisionOf } from './lamp.js'
 
 function signalOf(attention, fallback) {
   const priority = attention && attention.top && attention.top.priority
@@ -36,12 +37,20 @@ export function buildState(runtime = {}) {
   const dots = signal.dots
   const blink = Boolean(signal.blink)
 
+  const liveSessions = ((runtime.snapshot && runtime.snapshot.sessions) || []).filter((s) => s && s.live).length
+  const openTasks = Array.isArray(runtime.openTasks) ? runtime.openTasks : []
+  const working = liveSessions > 0 || openTasks.some((task) => task && task.status === '进行中')
+  const urgent = attention.items.some((item) => Number(item.level) >= 4)
+  const hasTodo = attention.items.length > 0
+  const lamp = lampDecisionOf({ pendingCount: stats.pendingCount, urgent, working, hasTodo })
+
   return {
     version: 1,
     at: runtime.computedAt || new Date().toISOString(),
-    dot,
-    dots,
-    blink,
+    dot: lamp.color,
+    dots: 1,
+    blink: lamp.mode === 'blink',
+    lamp,
     level: signal.level,
     levelLabel: signal.label,
     count: stats.confirmed.length,

@@ -132,6 +132,7 @@ const { selectReminders, reminderKind, localDate: reminderLocalDate } = await im
 const { candidatesFromEvents } = await import('../core/session-scan.js')
 const { buildSessionCards } = await import('../core/session-cards.js')
 const { buildAttention } = await import('../core/attention.js')
+const { classifyLamp } = await import('../core/lamp.js')
 const { createAlarm, inQuietHours } = await import('../core/alarm.js')
 const { resolveConfig, DEFAULT_CONFIG } = await import('../core/config.js')
 const { selectEvents, summarize, estimateTokens, TIERS } = await import('../core/read.js')
@@ -474,8 +475,9 @@ test('浮窗灯：CEO 任务最急时，鲸鱼娘不能还是蓝点', () => {
     snapshot: { sessions: [] },
   })
   assert.equal(state.level, 5)
-  assert.equal(state.dot, 'red')
-  assert.equal(state.blink, true)
+  assert.equal(state.lamp.color, 'red')
+  assert.equal(state.lamp.mode, 'steady')
+  assert.equal(state.blink, false)
 })
 
 test('统一事项：待办和 CEO 任务共用一套优先级', () => {
@@ -1708,7 +1710,7 @@ test('用户定：/todo 不接受界面传来的"最"（只有口述/指令能�
   assert.equal(created.json.item.mostImportant, false, '界面传来的一律不认')
   assert.equal(created.json.priority.level, 4, '又急又重要 = 4 级；要 5 级只能嘴上说"最"')
 })
-test('端到端：指令里说"最紧急 最重要" → 台账标记 → 看板 5 级 → 3 灯闪烁', async () => {
+test('端到端：指令里说"最紧急 最重要" → 台账标记 → 看板 5 级 → 红灯常亮', async () => {
   const dir = freshDir('priority-e2e')
   writeFileSync(
     join(dir, '待办.json'),
@@ -1726,8 +1728,8 @@ test('端到端：指令里说"最紧急 最重要" → 台账标记 → 看板 
 
   const state = await call(routes, '/api/dsh-xiaozhushou/state')
   assert.equal(state.json.level, 5)
-  assert.equal(state.json.dots, 1)
-  assert.equal(state.json.blink, true)
+  assert.equal(state.json.lamp.color, 'red')
+  assert.equal(state.json.lamp.mode, 'steady')
 
   const board = await call(routes, '/api/dsh-xiaozhushou/board')
   assert.equal(board.json.todos.attention.level, 5)
@@ -1753,12 +1755,13 @@ test('普通"紧急 重要"只有 2 灯、不闪（区分"最"）', async () => 
   assert.equal(state.json.blink, false, '不闪，和"最"区分开')
 })
 
-test('client.js 要真的画出多红点与闪烁（防回归）', () => {
+test('client.js 状态灯：单灯、可闪、绑统一事项', () => {
   const src = readFileSync(join(pkgDir, 'client.js'), 'utf8')
   assert.ok(src.includes('renderDots'), '必须有画灯的函数')
+  assert.ok(src.includes('ke-lamp'), '必须有单灯样式')
   assert.ok(src.includes('ke-blink'), '必须有闪烁样式')
   assert.ok(src.includes('attention'), '看板要渲染统一优先级层')
-  assert.ok(/Math\.max\(1, Number\(state\.dots\)/.test(src), '灯数不能小于 1')
+  assert.ok(!/Math\.max\(1, Number\(state\.dots\)/.test(src), '不再画多颗灯')
 })
 /* ── A1：三个角色工具（默认关闭） ─────────────────────────── */
 function toolFixture({ enabled = { secretary: true, ceo: true, historian: false }, tools = { enabled: true } } = {}) {
@@ -2635,12 +2638,31 @@ test('注入消息不是用户真实输入：目标模式/系统提醒/团队消
   assert.ok(INJECTED_MARKERS.length >= 8)
 })
 /* ── 纯函数层 ─────────────────────────────────────────────── */
-test('buildState：红点=紧急且重要、蓝点=有已确认、绿点=无', () => {
-  const mk = (items) => ({ ledger: { stats: () => ({ confirmed: items, pendingCount: 0, doneCount: 0, droppedCount: 0, skipped: 0 }) } })
-  assert.equal(buildState(mk([])).dot, 'green')
-  assert.equal(buildState(mk([{ id: 'T-1', title: 'a', urgency: 1, importance: 1 }])).dot, 'blue')
-  assert.equal(buildState(mk([{ id: 'T-1', title: 'a', urgency: 3, importance: 3 }])).dot, 'red')
-  assert.equal(buildState({ ledger: null }).dot, 'green', '台账坏了也要给个状态，不能崩')
+test('灯状态穷尽表：4 个条件 16 种组合都归一到唯一状态', () => {
+  const expected = (a, b, c, d) => a ? 'confirm' : b ? 'urgent' : c ? 'working' : d ? 'todo' : 'idle'
+  for (let bits = 0; bits < 16; bits += 1) {
+    const a = Boolean(bits & 1)
+    const b = Boolean(bits & 2)
+    const c = Boolean(bits & 4)
+    const d = Boolean(bits & 8)
+    const got = classifyLamp({ needsConfirm: a, urgent: b, working: c, hasTodo: d }).state
+    assert.equal(got, expected(a, b, c, d), 'bits=' + bits)
+  }
+})
+
+test('buildState 灯态：确认红闪、紧急红常亮、工作黄闪、待办黄常亮、无动作绿', () => {
+  const mk = (items, extra = {}) => ({ ledger: { stats: () => ({ confirmed: items, pendingCount: 0, doneCount: 0, droppedCount: 0, skipped: 0, ...extra }) } })
+  assert.equal(buildState(mk([])).lamp.color, 'green')
+  assert.equal(buildState(mk([])).lamp.mode, 'steady')
+  assert.equal(buildState(mk([{ id: 'T-1', title: 'a', urgency: 1, importance: 1 }])).lamp.color, 'warn')
+  assert.equal(buildState(mk([{ id: 'T-1', title: 'a', urgency: 3, importance: 3 }])).lamp.color, 'red')
+  assert.equal(buildState(mk([], { pendingCount: 1 })).lamp.mode, 'blink')
+  assert.equal(buildState(mk([], { pendingCount: 1 })).lamp.interval, 400)
+  const working = buildState({ ledger: { stats: () => ({ confirmed: [], pendingCount: 0 }) }, snapshot: { sessions: [{ id: 's', live: true }] } })
+  assert.equal(working.lamp.color, 'warn')
+  assert.equal(working.lamp.mode, 'blink')
+  assert.equal(working.lamp.interval, 800)
+  assert.equal(buildState({ ledger: null }).lamp.color, 'green', '台账坏了也要给个状态，不能崩')
 })
 
 test('buildBoard：今天到期进"要你动手"与提醒', () => {
@@ -2749,14 +2771,15 @@ test('眨眼与灯闪的 keyframes 不能同名（同名会互相覆盖，导致
   const closedRatio = (Number(m[3]) - Number(m[2])) / 100
   assert.ok(closedRatio <= 0.05, '闭眼时间应 ≤5% 周期（现 ' + (closedRatio * 100).toFixed(1) + '%）')
 })
-test('红灯：周期 1.3s、灭的时候完全消失（不是半透明蒙层）', () => {
+test('状态灯动画：红闪 0.4s、黄闪 0.8s，灭时完全消失', () => {
   const src = readFileSync(join(pkgDir, 'client.js'), 'utf8')
-  assert.ok(/ke-lamp-blink 1300ms/.test(src), '周期要 1300ms（用户定 1.3s）')
+  assert.ok(src.includes('ke-lamp-blink'), '要有灯闪关键帧')
+  assert.ok(/confirm:.*interval: 400/.test(readFileSync(join(pkgDir, 'core', 'lamp.js'), 'utf8')), '人工确认 0.4s')
+  assert.ok(/working:.*interval: 800/.test(readFileSync(join(pkgDir, 'core', 'lamp.js'), 'utf8')), '工作 0.8s')
   const m = /@keyframes ke-lamp-blink\{0%,([\d.]+)%\{opacity:1\}([\d.]+)%,100%\{opacity:([\d.]+)\}\}/.exec(src)
   assert.ok(m, '灯闪关键帧要能解析')
-  assert.equal(m[3], '0', '灭的时候必须是 opacity:0（完全消失），不能是 .15 那种半透明')
-  const offRatio = (100 - Number(m[2])) / 100
-  assert.ok(offRatio <= 0.15, '灭的时间要短（现 ' + (offRatio * 100).toFixed(0) + '% 周期）')
+  assert.equal(m[3], '0', '灭的时候必须完全消失')
+  assert.ok((100 - Number(m[2])) / 100 <= 0.30, '灭的时间不能太长')
 })
 test('鲸鱼娘动效：呼吸/眨眼/尾摆都是纯 CSS，且尊重减少动态偏好', () => {
   const src = readFileSync(join(pkgDir, 'client.js'), 'utf8')

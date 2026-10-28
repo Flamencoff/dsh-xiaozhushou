@@ -37,7 +37,7 @@ function sortItems(a, b) {
 export function buildAttention({ todos = [], tasks = [], now = new Date(), limit = 20 } = {}) {
   const items = []
   for (const todo of Array.isArray(todos) ? todos : []) {
-    if (!todo || todo.status !== '已确认') continue
+    if (!todo || (todo.status && todo.status !== '已确认')) continue
     const priority = todo.priority || computePriority(todo)
     items.push({
       kind: 'todo',
