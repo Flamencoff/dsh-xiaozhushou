@@ -1,16 +1,17 @@
 # dsh小助手（dsh-xiaozhushou）
 
-> **一句话价值**：给 DeepSeek Harness 装一个「看板 + 待办台账 + 三个角色」——秘书陪你聊、CEO 帮你判断、史官只记不评；所有数据留在你自己电脑上。
+> **给不会编程的人用的工作任务管理看板 + 共同成长的智能助手。**  
+> 侧栏一块看板，屏幕边一只鲸鱼娘浮窗；记待办、看最急、盯提醒，不用写代码。
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Node](https://img.shields.io/badge/node-%E2%89%A520-green)
 ![DSH](https://img.shields.io/badge/DSH-0.2.1--rc.3-blueviolet)
-![platform](https://img.shields.io/badge/platform-Windows%2040%2F11-blue)
+![platform](https://img.shields.io/badge/platform-Windows%2010%2F11-blue)
 ![zero dependencies](https://img.shields.io/badge/npm%20deps-0-brightgreen)
 
-| 收起态（浮窗只剩看板娘） | 看板娘形象 |
+| 收起态（只剩鲸鱼娘） | 鲸鱼娘形象 |
 |---|---|
-| ![收起态](docs/screenshots/overlay.png) | ![看板娘](docs/screenshots/mascot.png) |
+| ![收起态](docs/screenshots/overlay.png) | ![鲸鱼娘](docs/screenshots/mascot.png) |
 
 > 截图为界面示意，数据为演示内容。
 
@@ -18,11 +19,15 @@
 
 这是给**不会编程的小白**用的：不用写代码、不用配环境，装上之后会说话就能用。
 
-它本质上是一个 **DSH 会话管理器 + 与你共同成长的智能助理**：帮你管会话、记待办、盯提醒，用秘书 / CEO / 史官三个角色陪你把事做完。
+它把待办、优先级、提醒和任务收在一处；屏幕边的鲸鱼娘随时能喊出来，秘书、CEO、史官陪你聊、帮你判断、替你记录。所有数据都留在你自己电脑上。
+
+## 亮点：鲸鱼娘不是装饰
+
+她常驻屏幕边，收起时只剩形象；点开是浮窗，直接显示最急的事和待办。可以拖到顺手的位置，右键隐藏或唤回；不想开整页看板时，点一下就能记一条、看今天最该干什么。
 
 ## 路线与状态（作者本人也在摸索）
 
-- 现在能用：会话管理、待办台账、三角色聊天、定点提醒、共享任务板、看板娘。
+- 现在能用：工作任务看板、鲸鱼娘浮窗、待办台账、优先级、三角色聊天、定点提醒。
 - 下一步会持续更新：把**记忆系统**和**伴生秘书**做得更合理，让它越用越懂你、跨会话不丢事。
 - 本项目还在持续打磨，作者本人也在摸索中；欢迎提 issue 或反馈使用感受。
 
@@ -30,14 +35,11 @@
 
 dsh小助手是 DeepSeek Harness 的一个插件（bundle）。装上之后：
 
-- **侧栏多一个图标**：点开是整页看板（待办、优先级、CEO 任务、史官摘要）；
-- **右下角多一只鲸鱼娘浮窗**：拖来拖去、点开卡片、右键菜单；
-- **三个角色**：
-  - **秘书**（简单陪聊 + 记录看板）：陪你聊两句、把你要记的事记成待办；不做判断，需要判断时让 CEO 来；
-  - **CEO**（智能助理主体）：负责判断、拆解、派活与执行；给结论和下一步，能接任务/完成/归档/存为记忆；
-  - **史官**（格式化记录）：只做结构化记录、不判断，给伴生系统提供原生数据底层；每条带引用，判断类问题转 CEO；
-- **长期记忆（简化版）**：数据目录下 `记忆/` 四个 Markdown（用户画像 / 近期交代 / 长期规划 / 情绪与处境），由史官按周用规则从台账与任务板重写；秘书 / CEO 只带一段有长度上限的摘要进对话；
-- **所有数据都在本地**：台账、任务板、审计、记忆、对话存档都是普通 JSON / Markdown 文件，可直接看、可备份、可迁移。
+- **鲸鱼娘浮窗**：常驻屏幕边，收起只剩形象；点开看最急的事、记一条待办，拖拽换位置，右键隐藏/唤回；
+- **侧栏工作任务看板**：待办、优先级、任务和三角色对话集中在一页；优先级卡只看紧急/重要，待办卡放全部事项和大概用时；
+- **三个角色**：秘书简单陪聊、记待办；CEO 判断、拆解、派活与执行；史官只做结构化记录，给长期记忆供数据；
+- **长期记忆（简化版）**：`记忆/` 下四个 Markdown 由史官按周重写，秘书/CEO 只带一段摘要进对话；
+- **所有数据都在本地**：台账、任务、审计、记忆都是普通 JSON / Markdown，可直接看、可备份。
 
 ## 安装（不会编程也能装）
 
@@ -120,7 +122,7 @@ target = <本仓库绝对路径或 tgz 路径>
 | `alarm.policy` | `confirmed` | 确认制提醒：过期只在早、今天早/晚、明天只在晚；`classic` 恢复旧的“到点全列” |
 | `alarm.quietHours` | `23:00–07:00` | 静默时段（照常算，不弹） |
 | `dataDir` | 用户目录默认 | 数据目录；写了就优先用它 |
-| `pet.enabled` | `true` | 看板娘浮窗 |
+| `pet.enabled` | `true` | 鲸鱼娘浮窗 |
 | `find.allowedRoots` | `[]`（数据目录上一级） | 允许被「找文件」搜索的根目录 |
 | `find.content` | `false` | 是否允许按内容搜索（隐私默认关） |
 
@@ -197,7 +199,7 @@ Git 协作规范见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ## 许可
 
-代码 MIT（见 [LICENSE](LICENSE)）。看板娘等素材来源见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+代码 MIT（见 [LICENSE](LICENSE)）。鲸鱼娘等素材来源见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
 <!-- 被 dsh-plugin.org 收录后，把下面链接里的 owner/slug 换成详情页地址即可
 [![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/Flamencoff/dsh-xiaozhushou)
