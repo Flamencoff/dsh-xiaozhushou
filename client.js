@@ -20,7 +20,7 @@ window.__ModuleLoader__.load({
 
     const API = '/api/dsh-xiaozhushou'
     // 换图片时只改这个版本号，浏览器就不会吃旧缓存（不用重启）
-    const ASSET_V = 'r20261026a'
+    const ASSET_V = 'r20261028b'
     let workspaceNavigation = null
     const PET_HIDDEN_KEY = 'steward-pet-hidden'
     const PET_VIS_EVENT = 'steward-pet-visibility'

@@ -51,7 +51,7 @@ import { createHistorianSchedule } from './core/historian-schedule.js'
 export const inject = ['webServer']
 
 // 版本号单一来源（守卫测试会校验它与 package.json 一致）
-const VERSION = '0.47.5'
+const VERSION = '0.47.6'
 
 function readBoardTasks(storeRef) {
   try {

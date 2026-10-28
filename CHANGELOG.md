@@ -3,6 +3,14 @@
 本文件只记**用户可见**的变更，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。内部重构只写一行摘要，不写逐文件清单。
 
+## [0.47.6] - 2026-10-28
+
+### Changed
+
+- 鲸鱼娘换用豆包生成的完整形象：新的 pet/tail 资源、六种表情展示。
+- README 顶部换成完整看板演示图（演示数据、假对话），补充不会编程用户的最短上手路径。
+- 修正 README 中旧的任务会话标题示例为「CEO · 任务名」。
+
 ## [0.47.5] - 2026-10-28
 
 ### Added
