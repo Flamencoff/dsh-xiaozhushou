@@ -51,7 +51,7 @@ import { createHistorianSchedule } from './core/historian-schedule.js'
 export const inject = ['webServer']
 
 // 版本号单一来源（守卫测试会校验它与 package.json 一致）
-const VERSION = '0.47.7'
+const VERSION = '0.47.8'
 
 function readBoardTasks(storeRef) {
   try {
@@ -108,6 +108,25 @@ export function apply(ctx, configIn = {}) {
   const ceoRoleChat = createRoleChat({ ctx, store, log, dataDir, role: 'ceo', ledger, memory })
   const historianChat = createRoleChat({ ctx, store, log, dataDir, role: 'historian', ledger, memory })
   const historianSchedule = createHistorianSchedule({ dataDir, historian, historianChat, config, audit, log })
+
+  /** 转交任务后真的送一条消息进 CEO 会话；失败必须让调用方知道 */
+  async function notifyCeoHandoff(task, facts, fromRole) {
+    const explicitNew = task && task.explicitNew === true
+    const text =
+      '转交任务 ' + task.id + '：' + task.title + '\n背景：' + String(facts || '').slice(0, 800) +
+      (explicitNew
+        ? '\n这是用户明确要开的新任务：请开任务会话。'
+        : '\n这不是明确要新建：先按标题/会话号搜旧会话；找到用 send_session 发进去；找不到先问用户是哪个会话、要不要新建，不要直接开会话。')
+    let result
+    try {
+      result = await ceoRoleChat.notice(text)
+    } catch (error) {
+      result = { ok: false, message: String(error && error.message ? error.message : error) }
+    }
+    const ok = Boolean(result && result.ok)
+    audit.write({ role: fromRole, action: 'handoff:notice', target: task.id, result: ok ? 'ok' : 'failed', reason: ok ? '' : String((result && result.message) || 'notice_failed').slice(0, 120) })
+    return { ok, message: ok ? '' : String((result && result.message) || 'CEO 会话没接住') }
+  }
 
   /** 一键建好三个角色会话并绑定（接口与启动自动初始化共用；已存在则复用） */
   async function bootstrapRoles() {
@@ -271,13 +290,6 @@ export function apply(ctx, configIn = {}) {
       /* 审计失败不影响提醒 */
     }
     recompute()
-  // 首装/首启自动建好三角色会话（作者要求：小白装完就能用；已有绑定会复用）
-  if (!config.roles || config.roles.autoBootstrap !== false) {
-    ctx.effect(() => {
-      const timer = setTimeout(() => { bootstrapRoles().catch(() => {}) }, 2500)
-      return () => clearTimeout(timer)
-    })
-  }
     try {
       const fired = runtime.lastAlarm && runtime.lastAlarm.fired && runtime.lastAlarm.fired.length
       if (fired && runtime.dueReminders.length) {
@@ -305,6 +317,15 @@ export function apply(ctx, configIn = {}) {
     } catch {
       /* 落盘失败不影响路由实时计算 */
     }
+  }
+
+  // 首装/首启自动建好三角色会话：只在启动时跑一次，不能放进 refresh()，
+  // 否则每 60 秒重写一次绑定状态。
+  if (!config.roles || config.roles.autoBootstrap !== false) {
+    ctx.effect(() => {
+      const timer = setTimeout(() => { bootstrapRoles().catch(() => {}) }, 2500)
+      return () => clearTimeout(timer)
+    })
   }
 
   // Cordis 里直接访问未 inject 的服务属性会抛错（真机装上去才发现的坑），
@@ -1318,8 +1339,9 @@ export function apply(ctx, configIn = {}) {
           }
           const handed = historianChat.assignTask({ title: question, assignee: 'ceo', by: 'historian', facts })
           if (!handed || !handed.ok) return sendJson(res, 200, handed || { ok: false, code: 'failed', message: '没转成' })
-          audit.write({ role: 'historian', action: 'handoff', target: handed.task.id, result: 'ok' })
-          sendJson(res, 200, { ok: true, taskId: handed.task.id })
+          const notified = await notifyCeoHandoff(handed.task, facts, 'historian')
+          audit.write({ role: 'historian', action: 'handoff', target: handed.task.id, result: notified.ok ? 'ok' : 'partial' })
+          sendJson(res, 200, { ok: true, taskId: handed.task.id, notified: notified.ok, message: notified.ok ? '' : '任务已挂到 CEO 名下，但消息没送进 CEO 会话：' + notified.message })
         },
       }),
     )
@@ -1348,8 +1370,9 @@ export function apply(ctx, configIn = {}) {
           }
           const handed = chat.assignTask({ title: question, assignee: 'ceo', by: fromRole, facts })
           if (!handed || !handed.ok) return sendJson(res, 200, handed || { ok: false, code: 'failed', message: '没转成' })
-          audit.write({ role: fromRole, action: 'handoff', target: handed.task.id, result: 'ok' })
-          sendJson(res, 200, { ok: true, taskId: handed.task.id, from: fromRole })
+          const notified = await notifyCeoHandoff(handed.task, facts, fromRole)
+          audit.write({ role: fromRole, action: 'handoff', target: handed.task.id, result: notified.ok ? 'ok' : 'partial' })
+          sendJson(res, 200, { ok: true, taskId: handed.task.id, from: fromRole, notified: notified.ok, message: notified.ok ? '' : '任务已挂到 CEO 名下，但消息没送进 CEO 会话：' + notified.message })
         },
       }),
     )

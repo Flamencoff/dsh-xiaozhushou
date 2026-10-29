@@ -3,6 +3,18 @@
 本文件只记**用户可见**的变更，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。内部重构只写一行摘要，不写逐文件清单。
 
+## [0.47.8] - 2026-10-29
+
+### Fixed
+
+- 秘书/史官转交给 CEO 时，真正把通知送进 CEO 会话；失败回传 `notified:false`，看板不再假报“已转给 CEO”。
+- `roles:bootstrap` 从 `refresh()` 移出，只在插件启动时执行一次，避免每分钟重写角色绑定状态。
+- 看板一屏自适应：聊天区独立滚动、输入框固定；按钮缩小并排，避免三个角色窗口被消息顶出页面。
+
+### Tests
+
+- 新增 handoff 送达/失败、connection 拒绝、布局回归；210 passed。
+
 ## [0.47.7] - 2026-10-28
 
 ### Fixed

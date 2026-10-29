@@ -1852,6 +1852,31 @@ test('A1 工具：合计只有 3 个，且都符合官方 ToolDefinition 形状'
   }
 })
 
+test('路由 /handoff：本当送进 CEO 会话，失败要明确回传', async () => {
+  const dir = freshDir('handoff-route')
+  const store = createStore(dir)
+  store.write('CEO/会话状态.json', { version: 1, sessionId: 's-ceo', lastSeq: 0, title: 'dsh小助手 · CEO 对话' })
+  const prompts = []
+  const okCtx = makeCtx(dir, { services: { sessionController: { prompt: async (req) => { prompts.push(req); return { accepted: true } } } } })
+  mod.apply(okCtx.ctx, { dataDir: dir, startupRefreshMs: 0 })
+  const ok = await call(okCtx.routes, '/api/dsh-xiaozhushou/handoff', { role: 'secretary', question: '帮我看一下新版本' })
+  assert.equal(ok.status, 200)
+  assert.equal(ok.json.ok, true)
+  assert.equal(ok.json.notified, true)
+  assert.equal(prompts.length, 1)
+  assert.ok(prompts[0].content[0].text.includes('转交任务'))
+
+  const badDir = freshDir('handoff-route-fail')
+  const badStore = createStore(badDir)
+  badStore.write('CEO/会话状态.json', { version: 1, sessionId: 's-ceo', lastSeq: 0, title: 'dsh小助手 · CEO 对话' })
+  const badCtx = makeCtx(badDir, { services: { sessionController: { prompt: async () => { throw new Error('session gone') } } } })
+  mod.apply(badCtx.ctx, { dataDir: badDir, startupRefreshMs: 0 })
+  const bad = await call(badCtx.routes, '/api/dsh-xiaozhushou/handoff', { role: 'secretary', question: '再试一次' })
+  assert.equal(bad.json.ok, true)
+  assert.equal(bad.json.notified, false)
+  assert.match(bad.json.message, /没送进 CEO 会话|session gone/)
+})
+
 test('A1 秘书 handoff：只给 facts 也能落 CEO 任务板（不再报“任务没写清楚”）', async () => {
   const dir = freshDir('handoff-facts')
   const store = createStore(dir)
@@ -3344,12 +3369,16 @@ test('角色提示词：三个角色都要求说人话', async () => {
   }
 })
 
-test('布局守卫（0.47.1）：三个聊天框有清晰边框、人发消息浅蓝、史官留高、CEO任务三行', () => {
+test('布局守卫（0.47.8）：一屏内自适应，聊天区可滚、输入框两行可见、按钮缩小', () => {
   const src = readFileSync(join(pkgDir, 'client.js'), 'utf8')
   assert.ok(src.includes('.ke-chat{border:2px solid #b9c8ef'), '聊天框要有清晰边框')
   assert.ok(src.includes('.ke-msg.me{background:#d6e7ff'), '人发消息用浅蓝底')
-  assert.ok(src.includes('.ke-chat-small .ke-chat-log{max-height:210px'), '史官区域要预留更高')
-  assert.ok(src.includes('minmax(540px,52%)'), '左侧要压缩，给右侧留空间')
+  assert.ok(src.includes('.ke-wrap{') && src.includes('overflow:hidden') && src.includes('display:flex;flex-direction:column'), '看板要限制在一屏内')
+  assert.ok(src.includes('.ke-grid{') && src.includes('min-height:0;overflow:hidden'), '网格不能把页面顶出去')
+  assert.ok(src.includes('.ke-chat-log{max-height:none;min-height:52px'), '聊天记录可滚且至少留两行')
+  assert.ok(src.includes('.ke-add{display:flex;gap:4px') && src.includes('flex-wrap:nowrap'), '秘书按钮要同一行')
+  assert.ok(src.includes('.ke-chat .ke-add button{height:28px'), '聊天按钮要缩小')
+  assert.ok(src.includes('minmax(520px,52%)'), '右侧留出足够宽度')
   assert.ok(src.includes('.ke-left2-side{order:-1'), '优先级/待办要在秘书上面')
   assert.ok(src.includes('ke-panel ke-todo'), '待办是独立卡')
   assert.ok(!src.includes("className: 'ke-blk ke-task'"), 'CEO 任务区已按作者要求移除')
