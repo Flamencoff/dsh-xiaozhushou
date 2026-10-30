@@ -505,7 +505,12 @@ window.__ModuleLoader__.load({
         syncHistory('secretary', setChatLog)
         syncHistory('ceo', setCeoLog)
         syncHistory('historian', setHistLog)
-        return () => { alive = false }
+        const timer = setInterval(() => {
+          syncHistory('secretary', setChatLog)
+          syncHistory('ceo', setCeoLog)
+          syncHistory('historian', setHistLog)
+        }, 10_000)
+        return () => { alive = false; clearInterval(timer) }
       }, [])
 
       React.useEffect(() => {
@@ -1159,8 +1164,37 @@ window.__ModuleLoader__.load({
       // 2026-10-26：浮窗展开后能直接跟秘书说话
       const [petDraft, setPetDraft] = React.useState('')
       const [petReply, setPetReply] = React.useState('')
+      const petSeenRef = React.useRef(null)
       const [petMenu, setPetMenu] = React.useState(null)
       const [petBusy, setPetBusy] = React.useState(false)
+
+      // 秘书代问 CEO 的结果会回到秘书会话；浮窗只取新回复，不显示任何等待状态
+      React.useEffect(() => {
+        let alive = true
+        let timer = null
+        async function poll() {
+          try {
+            const res = await fetch(API + '/role/history?role=secretary')
+            const json = await res.json()
+            if (!alive || !json || !json.ok || !Array.isArray(json.lines)) return
+            const bots = json.lines.filter((line) => line.role === 'bot')
+            if (!bots.length) return
+            const latest = bots[bots.length - 1]
+            const seq = Number(latest.seq) || 0
+            if (petSeenRef.current === null) {
+              petSeenRef.current = seq
+              return
+            }
+            if (seq > petSeenRef.current) {
+              petSeenRef.current = seq
+              setPetReply(String(latest.text || ''))
+            }
+          } catch {}
+        }
+        poll()
+        timer = setInterval(poll, 10_000)
+        return () => { alive = false; if (timer) clearInterval(timer) }
+      }, [])
 
       async function petSend() {
         const text = petDraft.trim()

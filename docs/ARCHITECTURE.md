@@ -12,8 +12,8 @@ DSH Host
            ├── 注册 27 条 HTTP 路由（/api/dsh-xiaozhushou/*，本机 127.0.0.1 回环接口，不是对外网关）
            ├── 注册 3 个工具（steward_secretary / steward_ceo / steward_historian）
            ├── 注册 3 个角色 preset + 60s 心跳
-           └── 组装 core/ 38 个模块
-      └── client.js（客户端半，1166 行）
+           └── 组装 core/ 39 个模块
+      └── client.js（客户端半，看板/浮窗）
            └── 注册 3 个插槽：sidebar.panellist / main / shell.overlay
 ```
 

@@ -64,13 +64,13 @@ export function createToolset(deps) {
 
   const secretary = {
     name: 'steward_secretary',
-    description: '秘书：记/查待办、摘要、把事转给 CEO（handoff_to_ceo）。不做判断；不要用团队工具。',
+    description: '秘书：记/查待办、摘要、转交给 CEO。用户明确要 CEO 的回复时用 ask_ceo；只是转交用 handoff_to_ceo。不做判断；不要用团队工具。',
     parameters: {
       type: 'object',
       required: ['action'],
       additionalProperties: false,
       properties: {
-        action: { type: 'string', enum: ['add_todo', 'list_todos', 'summary', 'open_session', 'find_files', 'push_now', 'handoff_to_ceo', 'message_role', 'scan_sessions', 'scan_add'], description: '要做的事' },
+        action: { type: 'string', enum: ['add_todo', 'list_todos', 'summary', 'open_session', 'find_files', 'push_now', 'handoff_to_ceo', 'ask_ceo', 'message_role', 'scan_sessions', 'scan_add'], description: '要做的事' },
         title: { type: 'string', description: '待办标题（add_todo 必填，≤120 字）；或新会话标题（open_session）' },
         due: { type: 'string', description: '截止日期，YYYY-MM-DD 或 今天/明天' },
         confirmed: { type: 'boolean', description: 'open_session 必填：用户是否已口头同意开新会话' },
@@ -80,7 +80,7 @@ export function createToolset(deps) {
         root: { type: 'string', description: 'find_files：在哪个目录下找（必须在允许的目录里）' },
         mostUrgent: { type: 'boolean', description: '用户亲口说"最紧急"才置 true' },
         mostImportant: { type: 'boolean', description: '用户亲口说"最重要"才置 true' },
-        facts: { type: 'string', description: 'handoff_to_ceo：带过去的事实底稿（用户原话/上下文）' },
+        facts: { type: 'string', description: 'handoff_to_ceo / ask_ceo：带过去的事实底稿（用户原话/上下文）' },
         target: { type: 'string', enum: ['secretary', 'ceo', 'historian'], description: 'message_role：发给哪个角色' },
         text: { type: 'string', maxLength: 2000, description: 'message_role：要发过去的话（≤2000）' },
       },
@@ -101,6 +101,15 @@ export function createToolset(deps) {
           ? await roleChats.ceo.notice('秘书转交任务 ' + made.task.id + '：' + made.task.title + '\n背景：' + facts.slice(0, 800) + (explicitNew ? '\n这是用户明确要开的新任务：请开任务会话。' : '\n这不是明确要新建：先按标题/会话号搜旧会话；找到用 send_session 发进去；找不到先问用户是哪个会话、要不要新建，不要直接开会话。'))
           : { ok: false }
         return { ok: true, text: '已挂到 CEO 名下：' + made.task.id + ' ' + made.task.title + (notified.ok ? '（已通知 CEO 会话）' : '（CEO 会话没绑定，先挂在板上了）') }
+      }
+      if (action === 'ask_ceo') {
+        if (!taskOps || typeof taskOps.askCeo !== 'function') return { ok: false, text: '这个环境没有跟踪 CEO 回复的接口' }
+        const facts = String(args.facts || '').trim()
+        const title = String(args.title || '').trim() || facts.split(/[。\n]/)[0].slice(0, 80).trim() || facts.slice(0, 80)
+        const made = await taskOps.askCeo(title, facts)
+        if (!made || !made.ok) return { ok: false, text: (made && made.message) || '没挂到 CEO 名下' }
+        if (made.notified === false) return { ok: false, text: '任务已挂上，但 CEO 会话没接住：' + String(made.message || '') }
+        return { ok: true, text: '已让 CEO 处理，拿到结果我回你：' + made.task.id + '（' + made.task.title + '）' }
       }
       if (action === 'add_todo') {
         const result = ledger.add({
@@ -195,7 +204,7 @@ export function createToolset(deps) {
         const text = `已确认 ${stats.confirmed.length} 条、待确认 ${stats.pendingCount} 条、今天完成 ${stats.doneToday || 0} 条。`
         return { ok: true, text: text.length > 100 ? text.slice(0, 97) + '…' : text }
       }
-      return { ok: false, text: '秘书支持的 action：add_todo / list_todos / summary / open_session / find_files / push_now / handoff_to_ceo' }
+      return { ok: false, text: '秘书支持的 action：add_todo / list_todos / summary / open_session / find_files / push_now / handoff_to_ceo / ask_ceo' }
     },
   }
 

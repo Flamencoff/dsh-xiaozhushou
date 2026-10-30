@@ -46,6 +46,7 @@ import { buildState, buildBoard } from './core/board.js'
 import { createTaskFlow } from './core/task-flow.js'
 import { candidatesFromEvents } from './core/session-scan.js'
 import { createHistorianSchedule } from './core/historian-schedule.js'
+import { createRelayStore } from './core/relay.js'
 
 /** 依赖的宿主服务；缺失时插件不激活。 */
 export const inject = ['webServer']
@@ -108,15 +109,18 @@ export function apply(ctx, configIn = {}) {
   const ceoRoleChat = createRoleChat({ ctx, store, log, dataDir, role: 'ceo', ledger, memory })
   const historianChat = createRoleChat({ ctx, store, log, dataDir, role: 'historian', ledger, memory })
   const historianSchedule = createHistorianSchedule({ dataDir, historian, historianChat, config, audit, log })
+  const relayStore = createRelayStore(store)
 
   /** 转交任务后真的送一条消息进 CEO 会话；失败必须让调用方知道 */
-  async function notifyCeoHandoff(task, facts, fromRole) {
+  async function notifyCeoHandoff(task, facts, fromRole, options = {}) {
     const explicitNew = task && task.explicitNew === true
     const text =
       '转交任务 ' + task.id + '：' + task.title + '\n背景：' + String(facts || '').slice(0, 800) +
-      (explicitNew
-        ? '\n这是用户明确要开的新任务：请开任务会话。'
-        : '\n这不是明确要新建：先按标题/会话号搜旧会话；找到用 send_session 发进去；找不到先问用户是哪个会话、要不要新建，不要直接开会话。')
+      (options.askReply
+        ? '\n用户明确要结果：处理完后请回一句结论（不要过程），秘书会转达。'
+        : (explicitNew
+          ? '\n这是用户明确要开的新任务：请开任务会话。'
+          : '\n这不是明确要新建：先按标题/会话号搜旧会话；找到用 send_session 发进去；找不到先问用户是哪个会话、要不要新建，不要直接开会话。'))
     let result
     try {
       result = await ceoRoleChat.notice(text)
@@ -126,6 +130,74 @@ export function apply(ctx, configIn = {}) {
     const ok = Boolean(result && result.ok)
     audit.write({ role: fromRole, action: 'handoff:notice', target: task.id, result: ok ? 'ok' : 'failed', reason: ok ? '' : String((result && result.message) || 'notice_failed').slice(0, 120) })
     return { ok, message: ok ? '' : String((result && result.message) || 'CEO 会话没接住') }
+  }
+
+  /** 只有用户明确要回复时才走这里：转交 + 内部记一笔 + 盯 CEO 回复 */
+  async function askCeo(title, facts) {
+    const question = String(title || '').trim()
+    if (!question) return { ok: false, message: '要问 CEO 什么？' }
+    const made = secretaryChat.assignTask({ title: question, assignee: 'ceo', by: 'secretary', facts: String(facts || '') })
+    if (!made || !made.ok) return made || { ok: false, message: '任务没挂上' }
+    let baseline = { ok: false, sessionId: null, lines: [] }
+    try {
+      baseline = await ceoRoleChat.history(30)
+    } catch {}
+    const beforeSeq = Math.max(0, ...((baseline && baseline.lines) || []).map((line) => Number(line.seq) || 0))
+    const notified = await notifyCeoHandoff(made.task, facts, 'secretary', { askReply: true })
+    if (!notified.ok) {
+      audit.write({ role: 'secretary', action: 'relay:create', target: made.task.id, result: 'failed', reason: 'ceo_notice_failed' })
+      return { ok: true, task: made.task, notified: false, message: '任务已挂上，但 CEO 会话没接住：' + notified.message }
+    }
+    const record = relayStore.add({
+      taskId: made.task.id,
+      question,
+      ceoSessionId: (baseline && baseline.sessionId) || '',
+      ceoBeforeSeq: beforeSeq,
+    })
+    audit.write({ role: 'secretary', action: 'relay:create', target: record.ok ? record.item.id : made.task.id, result: record.ok ? 'ok' : 'failed' })
+    return { ok: true, task: made.task, notified: true, relayId: record.ok ? record.item.id : '', message: record.ok ? '' : record.message }
+  }
+
+  async function relayTick() {
+    const pending = relayStore.pending()
+    if (!pending.length) return
+    for (const record of pending) {
+      if (relayStore.isTimedOut(record)) {
+        relayStore.markTimeout(record.id)
+        audit.write({ role: 'secretary', action: 'relay:timeout', target: record.id, result: 'timeout' })
+        continue
+      }
+      let answer = record.status === 'answered' ? String(record.answer || '').trim() : ''
+      if (!answer) {
+        let history
+        try {
+          history = await ceoRoleChat.history(30)
+        } catch {
+          continue
+        }
+        if (!history || !history.ok) continue
+        const botLines = (history.lines || []).filter((line) => line.role === 'bot' && Number(line.seq) > Number(record.ceoBeforeSeq || 0))
+        answer = botLines.map((line) => String(line.text || '').trim()).filter(Boolean).join('\n').trim()
+        if (!answer) {
+          const task = ceoRoleChat.readTasks().find((item) => item.id === record.taskId)
+          if (task && task.status === '完成' && (task.resultSummary || task.resultPath)) {
+            answer = String(task.resultSummary || task.resultPath).trim()
+          }
+        }
+        if (!answer) continue
+        relayStore.markAnswered(record.id, answer)
+      }
+      const concise = await secretaryChat.notice(
+        'CEO 已回复：' + answer.slice(0, 1200) +
+        '\n只回一句结论，最多两句、40 字内；不要复述过程，不要客套。',
+      )
+      if (concise && concise.ok) {
+        relayStore.markDelivered(record.id)
+        audit.write({ role: 'secretary', action: 'relay:deliver', target: record.id, result: 'ok' })
+      } else {
+        audit.write({ role: 'secretary', action: 'relay:deliver', target: record.id, result: 'failed', reason: String((concise && concise.message) || 'notice_failed').slice(0, 120) })
+      }
+    }
   }
 
   /** 一键建好三个角色会话并绑定（接口与启动自动初始化共用；已存在则复用） */
@@ -336,6 +408,10 @@ export function apply(ctx, configIn = {}) {
       refresh().catch((error) => log('refresh failed: ' + String(error && error.message ? error.message : error)))
       historianSchedule.check().then(() => recompute()).catch((error) => log('historian schedule failed: ' + String(error && error.message ? error.message : error)))
     }, 60_000))
+    // 只追踪用户明确要回复的秘书请求；状态只写内部文件，不占看板/浮窗
+    ctx.effect(() => timerService.interval(() => {
+      relayTick().catch((error) => log('relay failed: ' + String(error && error.message ? error.message : error)))
+    }, 10_000))
     // 启动后 15 秒补跑错过的节律（关机/没开 DSH 时错过 21:45 的情况）
     ctx.effect(() => {
       const timer = setTimeout(() => {
@@ -357,6 +433,7 @@ export function apply(ctx, configIn = {}) {
         const taskOps = {
         list: () => ceoRoleChat.readTasks(),
         assign: (title, facts, explicitNew) => secretaryChat.assignTask({ title, assignee: 'ceo', by: 'secretary', facts, explicitNew }),
+        askCeo: (title, facts) => askCeo(title, facts),
         setStatus: (id, status, options) => ceoRoleChat.setTaskStatus(id, status, options),
         patch: (id, fields) => ceoRoleChat.patchTask(id, fields),
         writeHandoff: (task, sessionId) => taskFlow.writeHandoff({ task, sessionId }),
@@ -1161,39 +1238,9 @@ export function apply(ctx, configIn = {}) {
           const body = await readJsonBody(req)
           if (body && body.__invalidJson) return sendJson(res, 400, { ok: false, code: 'invalid_json', message: '请求体不是合法 JSON' })
           const question = String((body && body.question) || '')
-          // 2026-10-26：秘书说"记一下"就真的记成待办（这样 CEO/优先级都能接住）
-          let addedTodo = null
-          const m = question.match(/^(记一下|记下来|帮我记|记成待办|记一条)[:：,，\s]*(.+)$/)
-          if (m && m[2] && m[2].trim()) {
-            const added = ledger.add({ title: m[2].trim(), source: { kind: 'secretary-chat', at: new Date().toISOString() } })
-            if (added && added.ok) addedTodo = added.item
-          }
-          // 2026-10-26：秘书说"让 CEO 做…/交给 CEO"就真的派活到共享任务板（CEO 能看到并接）
-          let assignedTask = null
-          const delegate = question.match(/(?:让|叫|请|交给)\s*CEO\s*(?:去|来|帮|做|处理|接手|跑)?\s*[:：,，\s]*(.+)$/)
-          if (delegate && delegate[1] && delegate[1].trim()) {
-            const assigned = secretaryChat.assignTask({ title: delegate[1].trim(), assignee: 'ceo', by: 'secretary' })
-            if (assigned && assigned.ok) assignedTask = assigned.task
-          if (assignedTask) {
-            const label = question.slice(0, 800)
-            try { await ceoRoleChat.notice('用户转交任务 ' + assignedTask.id + '：' + assignedTask.title + '\n原话：' + label + (assignedTask.explicitNew === true ? '\n这是明确要开的新任务：请开任务会话。' : '\n这不是明确要新建：先找旧会话，找不到先问用户是哪个会话、要不要新建，不要直接开会话。')) } catch {}
-          }
-          }
-          // 秘书不能"嘴上说问过 CEO"：说问就必须真转
-          let autoHandoff = null
-          if (/(问|请|转|交|发|找).{0,4}CEO|请示|让 CEO|CEO 来/.test(question)) {
-            const delegated = assignedTask || (() => {
-              const made = secretaryChat.assignTask({ title: question.slice(0, 200), assignee: 'ceo', by: 'secretary', facts: '(来自秘书对话)' })
-              return made && made.ok ? made.task : null
-            })()
-            if (delegated) autoHandoff = delegated
-          }
+          // 不在路由里用关键词替模型判断“记待办/转交/要回复”：
+          // 全部由秘书模型通过 steward_secretary 的 add_todo / handoff_to_ceo / ask_ceo 决定。
           const result = await secretaryChat.chat(question)
-          if (autoHandoff && result && result.ok && !assignedTask) {
-            result.text = '已经挂到 CEO 名下：' + autoHandoff.id + '（' + autoHandoff.title + '）' + String.fromCharCode(10, 10) + '我没有替 CEO 回答；想看它怎么判，去 CEO 面板看这条任务，或在「dsh小助手 · CEO 对话」里直接问它。'
-          }
-          if (assignedTask && result && result.ok) result.text = (result.text || '') + '\n\n（已挂到 CEO 名下：' + assignedTask.id + '：' + assignedTask.title + '）'
-          if (addedTodo && result && result.ok) result.text = (result.text || '') + '\n\n（已记成待办 ' + addedTodo.id + '：' + addedTodo.title + '）'
           audit.write({ role: 'secretary', action: 'chat', target: result.ok ? 'session' : 'failed', result: result.ok ? 'ok' : 'failed', reason: question.slice(0, 60) })
           sendChat(res, result)
         },

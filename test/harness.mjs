@@ -163,6 +163,7 @@ const { collect } = await import('../core/collect.js')
 const { createRoleChat } = await import('../core/role-chat.js')
 const { createMemory, MEMORY_FILES, MEMORY_WEEK_MS, AUTO_START, AUTO_END } = await import('../core/memory.js')
 const { createCeoExecutor, detectExecuteIntent, EXECUTE_TITLE, EXECUTE_PRESET, buildExecuteTitle } = await import('../core/ceo-execute.js')
+const { createRelayStore } = await import('../core/relay.js')
 
 /* ── 宿主半：结构与路由 ───────────────────────────────────── */
 test('宿主半导出 apply 与 inject', () => {
@@ -1986,6 +1987,7 @@ test('A1 角色消息：秘书 handoff 会通知 CEO 会话，message_role 可�
   const taskOps = {
     list: () => made,
     assign: (title) => { const task = { id: 'K-902', title }; made.push(task); return { ok: true, task } },
+    askCeo: async (title, facts) => { const task = { id: 'K-903', title }; made.push(task); return { ok: true, task, notified: true } },
     patch: () => ({ ok: true }), setStatus: () => ({ ok: true }), archive: () => ({ ok: true }), remember: () => ({ ok: true }),
   }
   const roleChats = { ceo: { notice: (text) => { notices.push(text); return { ok: true } } }, secretary: { notice: () => ({ ok: true }) }, historian: { notice: () => ({ ok: true }) } }
@@ -1994,6 +1996,9 @@ test('A1 角色消息：秘书 handoff 会通知 CEO 会话，message_role 可�
   const handoff = await sec.execute({ action: 'handoff_to_ceo', facts: '用户说：查十五五规划' }, {})
   assert.equal(handoff.ok, true, JSON.stringify(handoff))
   assert.ok(notices.length === 1 && notices[0].includes('K-902'), 'handoff 后要通知 CEO 会话')
+  const asked = await sec.execute({ action: 'ask_ceo', facts: '用户说：查完回我一句' }, {})
+  assert.equal(asked.ok, true, JSON.stringify(asked))
+  assert.ok(made.some((task) => task.id === 'K-903'), 'ask_ceo 要创建带回复的任务')
   const sent = await sec.execute({ action: 'message_role', target: 'ceo', text: '这条是测试消息' }, {})
   assert.equal(sent.ok, true, JSON.stringify(sent))
   assert.ok(notices[1].includes('测试消息'))
@@ -3392,6 +3397,43 @@ test('布局守卫（0.47.8）：一屏内自适应，聊天区可滚、输入�
   assert.ok(src.includes('.ke-msg-row') && src.includes('.ke-msg-no'), '聊天消息要有序号与气泡行')
   assert.ok(src.includes("'.ke-btn{border:1px solid #e5e6eb;background:#fff;border-radius:6px;padding:1px 8px;font-size:11px"), '三个角色按钮要同一尺寸')
 })
+
+test('relay：只记录要回复的请求，状态只在内部流转', () => {
+  const mem = new Map()
+  const store = {
+    read(name, fallback) {
+      if (!mem.has(name)) return fallback
+      return JSON.parse(mem.get(name))
+    },
+    write(name, value) {
+      mem.set(name, JSON.stringify(value))
+      return true
+    },
+  }
+  const relay = createRelayStore(store, () => 1_760_000_000_000)
+  const made = relay.add({ taskId: 'K-001', question: '让 CEO 查一下', ceoSessionId: 's-ceo', ceoBeforeSeq: 10 })
+  assert.equal(made.ok, true, JSON.stringify(made))
+  assert.equal(relay.waiting().length, 1)
+  assert.equal(relay.pending().length, 1)
+  relay.markAnswered(made.item.id, '结论：已完成')
+  assert.equal(relay.pending().length, 1, '回传失败时还要能重试')
+  relay.markDelivered(made.item.id)
+  assert.equal(relay.pending().length, 0)
+  assert.equal(relay.find(made.item.id).status, 'delivered')
+  const raw = readFileSync(storePathOf(mem), 'utf8')
+  assert.ok(raw.includes('"status":"delivered"'), '状态要落内部文件')
+  const toolSrc = readFileSync(join(pkgDir, 'core', 'tools.js'), 'utf8')
+  assert.ok(toolSrc.includes("action === 'ask_ceo'") && toolSrc.includes('taskOps.askCeo'), 'ask_ceo 工具要接到 relay')
+})
+function storePathOf(mem) {
+  // 测试只验证序列化内容，不碰真实数据目录
+  const key = '秘书/待回复.json'
+  const value = mem.get(key)
+  assert.ok(value, '待回复记录文件必须写出')
+  const tmp = join(root, 'relay-store.json')
+  writeFileSync(tmp, value, 'utf8')
+  return tmp
+}
 
 for (const { name, fn } of queue) {
   try {
