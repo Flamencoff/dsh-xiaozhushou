@@ -92,7 +92,7 @@ dsh plugin --profile desktop add github:Flamencoff/dsh-xiaozhushou
 （已发 npm 时改：dsh plugin --profile desktop add dsh-xiaozhushou）
 
 ### 兼容与运行要求
-DSH 0.2.1-rc.3；Node >=20；Windows 10/11 已适配（Linux/macOS/鸿蒙未适配）
+DSH 0.2.1-rc.3 ~ 0.2.1-rc.5（engines.dsh: >=0.2.1-rc.3 <0.3.0）；Node >=20；Windows 10/11 已适配（Linux/macOS/鸿蒙未适配）
 
 ### 许可证
 MIT

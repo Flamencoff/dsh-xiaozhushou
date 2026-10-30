@@ -5,7 +5,7 @@
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Node](https://img.shields.io/badge/node-%E2%89%A520-green)
-![DSH](https://img.shields.io/badge/DSH-0.2.1--rc.3-blueviolet)
+![DSH](https://img.shields.io/badge/DSH-0.2.1--rc.3%20~%20rc.5-blueviolet)
 ![platform](https://img.shields.io/badge/platform-Windows%2010%2F11-blue)
 ![zero dependencies](https://img.shields.io/badge/npm%20deps-0-brightgreen)
 
@@ -164,7 +164,7 @@ sandbox 下只读两类会话：标题以 `[实验]` 开头的测试会话，以
 
 ## 兼容性
 
-- **DSH**：适配 **0.2.1-rc.3**（`engines.dsh = "0.2.1-rc.3"`；其它版本不保证能装能跑）；
+- **DSH**：适配 **0.2.1-rc.3 ~ 0.2.1-rc.5**（`engines.dsh = ">=0.2.1-rc.3 <0.3.0"`；0.3 以上未验证）；
 - **Node**：≥ 20；
 - **平台**：**Windows 10 / 11 已适配**；Linux、macOS、鸿蒙（HarmonyOS）**没有做适配**，未验证；
 - **依赖**：零 npm 依赖；客户端只使用 DSH 宿主提供的 `react`。

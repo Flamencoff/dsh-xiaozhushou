@@ -3082,6 +3082,7 @@ test('package.json：name / patch / client / exports / files 齐全', () => {
   assert.equal(pkg.dsh.bundle.patch, './cordis.patch.yml')
   assert.equal(pkg.dsh.client.platform, 'web')
   assert.ok(pkg.engines && pkg.engines.dsh, '必须声明 engines.dsh，安装与市场兼容性都靠它')
+  assert.ok(pkg.engines.dsh.includes('>=0.2.1-rc.3') && pkg.engines.dsh.includes('<0.3.0'), 'engines.dsh 要用兼容范围，不能写死 rc.3')
   for (const key of ['.', './client', './icon']) assert.ok(pkg.exports[key], 'exports 缺 ' + key)
   for (const entry of ['index.js', 'client.js', 'cordis.patch.yml', 'locale/*.json', 'icon.svg', 'core/', 'assets/', 'README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md']) {
     assert.ok(pkg.files.includes(entry), 'files 缺 ' + entry)
@@ -3378,6 +3379,10 @@ test('布局守卫（0.47.8）：一屏内自适应，聊天区可滚、输入�
   assert.ok(src.includes('.ke-chat-log{max-height:none;min-height:52px'), '聊天记录可滚且至少留两行')
   assert.ok(src.includes('.ke-add{display:flex;gap:4px') && src.includes('flex-wrap:nowrap'), '秘书按钮要同一行')
   assert.ok(src.includes('.ke-chat .ke-add button{height:28px'), '聊天按钮要缩小')
+  assert.ok(src.includes('.ke-left2-main{min-width:0;flex:1 1 0;min-height:240px'), '秘书面板不能被待办挤成 0 高')
+  assert.ok(src.includes('.ke-left2-main .ke-chat{min-height:200px}'), '秘书聊天区要留出可见高度')
+  assert.ok(/async function petSend[\s\S]{0,600}?\/secretary\/chat/.test(src), '浮窗快捷输入要直接发秘书会话')
+  assert.ok(src.includes('petReply') && src.includes('跟秘书说一句（回车发送）'), '浮窗要显示秘书回复')
   assert.ok(src.includes('minmax(520px,52%)'), '右侧留出足够宽度')
   assert.ok(src.includes('.ke-left2-side{order:-1'), '优先级/待办要在秘书上面')
   assert.ok(src.includes('ke-panel ke-todo'), '待办是独立卡')

@@ -82,9 +82,9 @@ window.__ModuleLoader__.load({
       '.ke-h1{font-size:16px;font-weight:700;margin:0 0 2px;flex:0 0 auto}',
       '.ke-sub{color:var(--mu);font-size:11px;margin-bottom:6px;flex:0 0 auto}',
       '.ke-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(520px,52%);gap:10px;align-items:stretch;flex:1 1 0;min-height:0;overflow:hidden}',
-      '.ke-left2{display:flex;flex-direction:column;height:100%;min-height:0}',
-      '.ke-left2-side{order:-1;margin-bottom:4px;flex:0 0 auto}',
-      '.ke-left2-main{min-width:0;flex:1 1 0;min-height:0;display:flex;flex-direction:column}',
+      '.ke-left2{display:flex;flex-direction:column;height:100%;min-height:0;overflow:hidden}',
+      '.ke-left2-side{order:-1;margin-bottom:4px;flex:0 1 auto;max-height:45%;overflow-y:auto}',
+      '.ke-left2-main{min-width:0;flex:1 1 0;min-height:240px;display:flex;flex-direction:column;overflow:hidden}',
       '.ke-left2-side{min-width:0}',
       '.ke-col{min-width:0;min-height:0;display:flex;flex-direction:column;overflow:hidden}',
       '.ke-blk{display:flex;align-items:baseline;gap:7px;margin:2px 0 7px}',
@@ -97,6 +97,8 @@ window.__ModuleLoader__.load({
       '.ke-kv{font-size:11px;line-height:1.62;color:var(--t2)}.ke-kv b{color:var(--t)}',
       '.ke-note{background:var(--soft);border-radius:8px;padding:5px 10px;font-size:10.5px;color:var(--t2);line-height:1.4;flex:0 0 auto}',
       '.ke-chat{background:var(--soft);border-radius:10px;padding:6px;margin:4px 0;display:flex;flex-direction:column;min-height:0;flex:1 1 0}',
+      '.ke-left2-main .ke-chat{min-height:200px}',
+      '.ke-left2-main .ke-chat-log{min-height:120px}',
       '.ke-chat-log{max-height:none;min-height:52px;flex:1 1 0;overflow-y:auto;display:flex;flex-direction:column;gap:4px;margin-bottom:0}',
       '.ke-chat-small .ke-chat-log{max-height:none;min-height:44px}',
       '.ke-chat-right .ke-chat-log{max-height:none}',
@@ -1156,19 +1158,26 @@ window.__ModuleLoader__.load({
       const [zzzTick, setZzzTick] = React.useState(0)
       // 2026-10-26：浮窗展开后能直接跟秘书说话
       const [petDraft, setPetDraft] = React.useState('')
+      const [petReply, setPetReply] = React.useState('')
       const [petMenu, setPetMenu] = React.useState(null)
       const [petBusy, setPetBusy] = React.useState(false)
 
       async function petSend() {
-        const title = petDraft.trim()
-        if (!title || petBusy) return
+        const text = petDraft.trim()
+        if (!text || petBusy) return
         setPetBusy(true)
+        setPetReply('')
         try {
-          const res = await fetch(API + '/todo', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title }) })
+          const res = await fetch(API + '/secretary/chat', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ question: text }) })
           const json = await res.json()
-          setPetDraft(json && json.ok ? '' : petDraft)
-        } catch {
-          /* 失败保留输入 */
+          if (json && json.ok) {
+            setPetDraft('')
+            setPetReply(String(json.text || '（秘书没说话）'))
+          } else {
+            setPetReply('秘书没答上来：' + String((json && json.message) || '会话不可用'))
+          }
+        } catch (e) {
+          setPetReply('没发出去：' + String(e && e.message ? e.message : e))
         }
         setPetBusy(false)
       }
@@ -1330,12 +1339,15 @@ window.__ModuleLoader__.load({
               h('div', { className: 'ke-add', style: { margin: '6px 0 0' } },
                 h('input', {
                   type: 'text',
-                  placeholder: '跟秘书说一句（回车记下）',
+                  placeholder: '跟秘书说一句（回车发送）',
                   value: petDraft,
                   onChange: (e) => setPetDraft(e.target.value),
                   onKeyDown: (e) => { if (e.key === 'Enter') petSend() },
                 }),
-                h('button', { onClick: petSend, disabled: petBusy || !petDraft.trim() }, '记下')),
+                h('button', { onClick: petSend, disabled: petBusy || !petDraft.trim() }, petBusy ? '…' : '发送')),
+              petReply
+                ? h('div', { style: { marginTop: 6, padding: '6px 8px', background: '#f2f3f5', borderRadius: 6, fontSize: 12, lineHeight: 1.45, color: '#1f2329', whiteSpace: 'pre-wrap', maxHeight: 132, overflowY: 'auto' } }, petReply)
+                : null,
               h('div', { className: 'ft' },
                 h('span', { className: 'dot', style: { position: 'static', boxShadow: 'none', background: dotColor } }),
                 '数据 ' + localHm(s.at, false),
